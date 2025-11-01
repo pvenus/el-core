@@ -1,0 +1,7 @@
+# === Core ===
+numpy>=1.23
+torch>=2.2,<3  # CPU 버전 기준. CUDA가 필요하면 README 안내 참고.
+PyYAML>=6.0
+
+# === Dev/Optional ===
+tqdm>=4.66

@@ -1,0 +1,29 @@
+env:
+  size: 5
+  max_steps: 60
+  start: [0, 0]
+  goal: [4, 4]
+  walls: [[1,1], [1,2], [2,2]]
+
+algo:
+  hidden: 128
+  gamma: 0.99
+  lr: 0.001
+  grad_clip: 10.0
+  double_dqn: true
+  target_update_interval: 500
+  device: "cpu"
+  seed: 7
+
+  episodes: 800
+  batch_size: 64
+  buffer_size: 50000
+  start_learning: 1000
+  train_interval: 1
+  eps_start: 1.0
+  eps_end: 0.05
+  eps_decay: 15000
+
+log:
+  log_every: 20
+  eval_every: 100
