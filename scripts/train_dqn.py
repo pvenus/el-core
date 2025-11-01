@@ -1,4 +1,5 @@
 import argparse, yaml, numpy as np
+import torch
 from orl.envs.gridworld import GridWorld, GridWorldConfig
 from orl.agents.dqn import DQNAgent, DQNConfig
 from orl.utils.replay import ReplayBuffer
@@ -9,7 +10,9 @@ def evaluate(env, agent, episodes=5, render=False):
     for _ in range(episodes):
         obs = env.reset(); done=False; ep_ret=0.0; steps=0
         while not done and steps < env.cfg.max_steps:
-            act = int(agent.q.__call__(np.expand_dims(obs,0)).argmax(dim=-1).item())
+            x = torch.from_numpy(np.expand_dims(obs, 0)).float().to(agent.device)
+            with torch.no_grad():
+                act = int(agent.q(x).argmax(dim=-1).item())
             obs, r, done, _ = env.step(act); ep_ret += r; steps += 1
         rets.append(ep_ret)
         if render: print(env.render_ascii(), "\n")
