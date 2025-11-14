@@ -58,3 +58,27 @@ Visualize the VAD trajectory for a specific episode and include event markers if
 ```bash
 python src/test/plot_vad_trajectory_3d.py --episode 0 --show-event
 ```
+
+
+### emb model download
+```bash
+pip install -U "huggingface_hub[cli]"
+
+python -c "from huggingface_hub import login; login()"
+# token 입력
+
+python -c "from huggingface_hub import hf_hub_download; \
+hf_hub_download(
+    repo_id='bartowski/Llama-3.2-1B-Instruct-GGUF',
+    filename='Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+    local_dir='models',
+    local_dir_use_symlinks=False
+)"
+
+python src/test/llm_emb_list.py
+
+python src/test/llm_pca_analysis.py
+
+python src/test/llm_kmeans.py
+
+```
