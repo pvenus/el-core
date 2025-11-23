@@ -75,6 +75,11 @@ hf_hub_download(
     local_dir_use_symlinks=False
 )"
 
+#llama_cpp 설치
+pip install llama_cpp_python
+#scikit-learn 설치
+pip install scikit-learn
+
 python src/test/llm_emb_list.py
 
 python src/test/llm_pca_analysis.py
