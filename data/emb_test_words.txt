@@ -1,0 +1,16 @@
+happiness
+sadness
+anger
+fear
+surprise
+disgust
+trust
+anticipation
+joy
+grief
+rage
+terror
+amazement
+loathing
+confidence
+curiosity

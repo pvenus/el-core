@@ -1,0 +1,17 @@
+text,category,notes
+happiness,emotion,base
+sadness,emotion,base
+anger,emotion,base
+fear,emotion,base
+surprise,emotion,base
+disgust,emotion,base
+trust,emotion,base
+anticipation,emotion,base
+joy,emotion,base
+grief,emotion,extended
+rage,emotion,extended
+terror,emotion,extended
+amazement,emotion,extended
+loathing,emotion,extended
+confidence,emotion,related
+curiosity,emotion,related

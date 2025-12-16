@@ -1,0 +1,16 @@
+{"text": "happiness", "category": "emotion", "notes": "base"}
+{"text": "sadness", "category": "emotion", "notes": "base"}
+{"text": "anger", "category": "emotion", "notes": "base"}
+{"text": "fear", "category": "emotion", "notes": "base"}
+{"text": "surprise", "category": "emotion", "notes": "base"}
+{"text": "disgust", "category": "emotion", "notes": "base"}
+{"text": "trust", "category": "emotion", "notes": "base"}
+{"text": "anticipation", "category": "emotion", "notes": "base"}
+{"text": "joy", "category": "emotion", "notes": "base"}
+{"text": "grief", "category": "emotion", "notes": "extended"}
+{"text": "rage", "category": "emotion", "notes": "extended"}
+{"text": "terror", "category": "emotion", "notes": "extended"}
+{"text": "amazement", "category": "emotion", "notes": "extended"}
+{"text": "loathing", "category": "emotion", "notes": "extended"}
+{"text": "confidence", "category": "emotion", "notes": "related"}
+{"text": "curiosity", "category": "emotion", "notes": "related"}
