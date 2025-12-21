@@ -1,8 +1,14 @@
-
-
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+
+from sklearn.decomposition import PCA
+try:
+    import umap
+except Exception:  # pragma: no cover
+    umap = None
 
 
 def _make_demo_data(seed: int = 42):
@@ -10,8 +16,7 @@ def _make_demo_data(seed: int = 42):
     rng = np.random.default_rng(seed)
 
     n_agents = 120
-    n_traits = 6
-    n_scenarios = 6
+    n_traits = 27
 
     agents = pd.DataFrame(
         {
@@ -19,23 +24,37 @@ def _make_demo_data(seed: int = 42):
         }
     )
 
-    # Traits in [0, 1]
-    trait_cols = ["aggression", "fear", "curiosity", "risk", "patience", "cooperation"]
-    traits = rng.beta(2.0, 2.0, size=(n_agents, n_traits))
+    # 27D vector in [-1, 1] (demo).
+    # Name axes as a..z plus aa (27 dims) then group into 9 triplets (3D subspaces).
+    axis_names = [
+        "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o",
+        "p","q","r","s","t","u","v","w","x","y","z","aa"
+    ]
+    trait_cols = axis_names
+
+    # Generate values in [-1, 1]
+    traits = rng.uniform(-1.0, 1.0, size=(n_agents, n_traits))
     for j, c in enumerate(trait_cols):
         agents[c] = traits[:, j]
 
-    # Simple clustering (just for visualization)
-    agents["cluster"] = pd.cut(agents["risk"] * 0.7 + agents["aggression"] * 0.3, 4, labels=["C1", "C2", "C3", "C4"]).astype(str)
+    # 9 subspaces: (a,b,c), (d,e,f), ...
+    subspaces = [
+        ("a","b","c"),
+        ("d","e","f"),
+        ("g","h","i"),
+        ("j","k","l"),
+        ("m","n","o"),
+        ("p","q","r"),
+        ("s","t","u"),
+        ("v","w","x"),
+        ("y","z","aa"),
+    ]
 
-    # Fake 2D embedding (pretend PCA/UMAP)
-    x = (agents["risk"] - agents["fear"]) + rng.normal(0, 0.05, size=n_agents)
-    y = (agents["aggression"] - agents["patience"]) + rng.normal(0, 0.05, size=n_agents)
-    agents["emb_x"] = x
-    agents["emb_y"] = y
+    agents["cluster"] = pd.cut(agents["e"] * 0.5 + agents["t"] * 0.3 - agents["b"] * 0.2, 4, labels=["C1", "C2", "C3", "C4"]).astype(str)
 
     # Scenario → action distribution (Attack / Defend / Retreat)
     actions = ["Attack", "Defend", "Retreat"]
+    n_scenarios = 6
     scenarios = []
     for s in range(1, n_scenarios + 1):
         # each scenario has a different base distribution
@@ -65,7 +84,7 @@ def _make_demo_data(seed: int = 42):
     # Pretend we measured explainability as agreement between trait-rule and choice
     explainability = float(rng.uniform(0.62, 0.83))
 
-    return agents, scenarios, actions, trait_cols, explainability
+    return agents, scenarios, actions, trait_cols, subspaces, explainability
 
 
 def render_overview():
@@ -73,7 +92,7 @@ def render_overview():
     st.caption("Proof in one screen: **agents exist → actions differ → reasons (traits) explain**.")
 
     # --- Demo data (swap to real data later) ---
-    agents, scenarios, actions, trait_cols, explainability = _make_demo_data(
+    agents, scenarios, actions, trait_cols, subspaces, explainability = _make_demo_data(
         seed=st.session_state.get("demo_seed", 42)
     )
 
@@ -95,17 +114,122 @@ def render_overview():
     left, right = st.columns([1.35, 1.0])
 
     with left:
-        st.subheader("Agent diversity map")
-        st.caption("Each dot is an agent. Color shows a simple trait-derived cluster (demo).")
-
-        # Scatter chart using Streamlit native charting (stable, no extra deps)
-        chart_df = agents[["emb_x", "emb_y", "cluster", "agent_id"]].copy()
-        st.scatter_chart(
-            chart_df,
-            x="emb_x",
-            y="emb_y",
-            color="cluster",
+        st.subheader("Agent vector spaces")
+        st.caption(
+            "Each agent is a 27D vector in [-1, 1]. We show it as **9 separate 3D subspaces** to keep the geometry interpretable."
         )
+        st.divider()
+        st.subheader("27D split into 9 × 3D subspaces")
+        st.caption(
+            "All 9 subspaces are rendered in **true 3D** at once (3×3 grid). "
+            "Pick an agent to highlight its position and direction vector in every subspace."
+        )
+
+        # Agent selector for highlighting across all 9 3D panels
+        agent_id_3d = st.selectbox(
+            "Highlight agent (applies to all panels)",
+            agents["agent_id"].tolist(),
+            index=0,
+            key="overview_agent_pick_3d",
+        )
+        arow3d = agents.loc[agents["agent_id"] == agent_id_3d].iloc[0]
+
+        show_vectors = st.checkbox("Show direction vectors (origin → agent)", value=True, key="overview_show_vectors")
+
+        # Render 9 true-3D plots in a 3×3 grid
+        grid_rows = [st.columns(3) for _ in range(3)]
+        clusters = sorted(agents["cluster"].unique())
+
+        for idx, (xcol, ycol, zcol) in enumerate(subspaces):
+            r = idx // 3
+            c = idx % 3
+            with grid_rows[r][c]:
+                fig3d = go.Figure()
+
+                # Per-cluster point clouds
+                for cl in clusters:
+                    dfc = agents.loc[agents["cluster"] == cl, ["agent_id", xcol, ycol, zcol]].copy()
+                    fig3d.add_trace(
+                        go.Scatter3d(
+                            x=dfc[xcol],
+                            y=dfc[ycol],
+                            z=dfc[zcol],
+                            mode="markers",
+                            name=str(cl),
+                            marker=dict(size=2.8, opacity=0.70),
+                            text=dfc["agent_id"],
+                            hovertemplate=(
+                                "<b>%{text}</b><br>"
+                                + f"{xcol}=%{{x:.3f}}<br>{ycol}=%{{y:.3f}}<br>{zcol}=%{{z:.3f}}<extra></extra>"
+                            ),
+                        )
+                    )
+
+                # Highlight selected agent
+                fig3d.add_trace(
+                    go.Scatter3d(
+                        x=[float(arow3d[xcol])],
+                        y=[float(arow3d[ycol])],
+                        z=[float(arow3d[zcol])],
+                        mode="markers",
+                        name=f"Selected",
+                        marker=dict(size=7, symbol="diamond", opacity=1.0),
+                        hovertemplate=(
+                            f"<b>{agent_id_3d}</b><br>"
+                            + f"{xcol}=%{{x:.3f}}<br>{ycol}=%{{y:.3f}}<br>{zcol}=%{{z:.3f}}<extra></extra>"
+                        ),
+                        showlegend=False,
+                    )
+                )
+
+                # Optional: direction vector from origin
+                if show_vectors:
+                    fig3d.add_trace(
+                        go.Scatter3d(
+                            x=[0.0, float(arow3d[xcol])],
+                            y=[0.0, float(arow3d[ycol])],
+                            z=[0.0, float(arow3d[zcol])],
+                            mode="lines",
+                            name="Direction",
+                            line=dict(width=5),
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
+                fig3d.update_layout(
+                    margin=dict(l=0, r=0, t=28, b=0),
+                    height=260,
+                    showlegend=False,
+                    title=f"S{idx+1}: ({xcol},{ycol},{zcol})",
+                    scene=dict(
+                        xaxis=dict(range=[-1.05, 1.05], title=xcol, zeroline=True, showticklabels=False),
+                        yaxis=dict(range=[-1.05, 1.05], title=ycol, zeroline=True, showticklabels=False),
+                        zaxis=dict(range=[-1.05, 1.05], title=zcol, zeroline=True, showticklabels=False),
+                        aspectmode="cube",
+                    ),
+                )
+
+                st.plotly_chart(fig3d, use_container_width=True)
+
+        st.divider()
+        st.subheader("Inspect an agent vector")
+        agent_id = st.selectbox("Agent", agents["agent_id"].tolist(), index=0, key="overview_agent_pick")
+        arow = agents.loc[agents["agent_id"] == agent_id].iloc[0]
+
+        # Compute per-subspace magnitude (L2 norm) to show how the agent "leans" across spaces
+        mags = []
+        labels = []
+        for i, (xcol, ycol, zcol) in enumerate(subspaces, start=1):
+            v = np.array([arow[xcol], arow[ycol], arow[zcol]], dtype=float)
+            mags.append(float(np.linalg.norm(v)))
+            labels.append(f"S{i}({xcol}{ycol}{zcol})")
+
+        mag_df = pd.DataFrame({"subspace": labels, "magnitude": mags})
+        st.bar_chart(mag_df, x="subspace", y="magnitude", height=240)
+
+        with st.expander("Show selected agent raw 27D vector", expanded=False):
+            st.write({k: float(arow[k]) for k in trait_cols})
 
         with st.expander("Show agent table (demo)", expanded=False):
             cols = ["agent_id", "cluster"] + trait_cols
@@ -118,6 +242,7 @@ def render_overview():
 - **Different agents are generated** (trait vectors differ).
 - Under the **same scenario**, agents show **different action distributions**.
 - Differences are **explainable** via trait signals (e.g., risk↑ → attack bias, fear↑ → retreat bias).
+- The same agent has a **27D signature**, shown as **9 separate 3D subspaces** for interpretability.
 
 **Goal for IR / evaluation:** show *reproducible* evidence with logs + measurable metrics.
             """

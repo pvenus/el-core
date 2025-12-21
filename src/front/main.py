@@ -6,6 +6,7 @@ sys.path.append(os.path.dirname(__file__))
 
 import streamlit as st
 from overview import render_overview
+from agent_gallery import render_agent_gallery
 
 # -------------------------
 # Streamlit App: EL-Core UI
@@ -50,13 +51,6 @@ st.sidebar.divider()
 with st.sidebar.expander("Global Filters", expanded=False):
     st.selectbox("Dataset", ["demo"], index=0)
     st.checkbox("Use cached data", value=True)
-
-
-def render_agent_gallery():
-    st.title("Agent Gallery")
-    st.caption("Browse agents and their traits / behavior fingerprints.")
-    st.info("TODO: Add filters + agent cards + detail panel.")
-
 
 def render_scenario_lab():
     st.title("Scenario Lab")
