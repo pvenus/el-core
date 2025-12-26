@@ -1,69 +1,64 @@
-# src/emo_phys/tests/test_simple_physics.py
-
 import numpy as np
 
-from emo_phys import SimplePhysics, PhysicsParams
+from emo_phys import SimplePhysics, PhysicsParams, PhysicsContext
 
 
-def run_demo_steps():
+def run_demo_sequence():
     """
-    간단히 상태가 어떻게 움직이는지 눈으로 확인하는 데모.
+    baseline -> (이벤트 1회) -> (복원 step N회)
+    + 각 tick에서 복원 목표 벡터(restore_vector)와 실제 이동(v_step)을 같이 출력
     """
     rng = np.random.default_rng(seed=42)
 
-    # 3차원 PCA 공간이라고 가정.
-    baseline = np.array([0.0, 0.0, 0.0], dtype=np.float32)        # 기준점(중립 상태)
-    initial_state = np.array([1.0, -0.5, 0.8], dtype=np.float32)  # 시작 상태
-    event_vec = np.array([2.0, 1.0, -1.0], dtype=np.float32)      # 어떤 이벤트 벡터
-
-    params = PhysicsParams(
-        k_event=0.5,
-        k_restore=0.1,
-        noise_std=0.01,
-    )
-
+    baseline = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    params = PhysicsParams(k_event=0.7, noise_std=0.01)
     physics = SimplePhysics(baseline=baseline, params=params)
 
-    state = initial_state.copy()
+    ctx = PhysicsContext(tick=0)
 
-    print("step\tstate\t\t\t\t distance_to_baseline")
-    print("-" * 60)
-    for t in range(10):
-        dist = physics.distance_to_baseline(state)
-        print(f"{t}\t{state}\t {dist:.4f}")
+    # 시작 상태
+    state = baseline.copy()
 
-        # 한 스텝 업데이트
-        state = physics.step(state, event_vec, rng=rng)
+    # 이벤트 벡터(예시)
+    event_vec = np.array([2.0, 1.0, -1.0], dtype=np.float32)
 
-    # 마지막 상태까지 본 뒤 출력
-    dist = physics.distance_to_baseline(state)
-    print(f"final\t{state}\t {dist:.4f}")
+    print("=== BEFORE EVENT ===")
+    print(f"tick={ctx.tick}\tstate={state}\tdist={physics.distance_to_baseline(state):.4f}")
 
+    # 이벤트 1회 적용
+    s_event = physics.apply_event(state, event_vec, ctx=ctx, rng=rng)
+    v_event = s_event - state
 
-def test_simple_physics_moves_towards_baseline():
-    """
-    아주 느슨한 단위 테스트:
-    첫 스텝에서 baseline과의 거리가
-    '극단적으로' 멀어지지 않는지만 확인한다.
-    (완벽한 수렴 테스트가 아니라 sanity check 용도)
-    """
-    rng = np.random.default_rng(seed=0)
+    print("\n=== AFTER EVENT (tick=0) ===")
+    print(f"tick={ctx.tick}\tstate={s_event}\tdist={physics.distance_to_baseline(s_event):.4f}")
+    print(f"v_event(delta) = {v_event}")
 
-    baseline = np.zeros(3, dtype=np.float32)
-    initial_state = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    event_vec = np.array([2.0, 0.0, 0.0], dtype=np.float32)
+    # 복원 dynamics
+    print("\n=== PASSIVE STEPS ===")
+    state = s_event
 
-    params = PhysicsParams(k_event=0.5, k_restore=0.1, noise_std=0.0)
-    physics = SimplePhysics(baseline=baseline, params=params)
+    for t in range(1, 11):
+        ctx.tick = t
 
-    prev_dist = physics.distance_to_baseline(initial_state)
-    next_state = physics.step(initial_state, event_vec, rng=rng)
-    next_dist = physics.distance_to_baseline(next_state)
+        v_restore_ideal = physics.restore_vector(state)  # 목표(의도)
+        next_state = physics.passive_step(state, ctx=ctx, rng=rng)
+        v_step = next_state - state                      # 실제 이동
 
-    # baseline(0,0,0) 기준으로 완전 이상하게 멀어지지는 않는지만 체크
-    assert next_dist < prev_dist * 2.0
+        dist_now = physics.distance_to_baseline(state)
+        dist_next = physics.distance_to_baseline(next_state)
+
+        print(f"[tick={ctx.tick}]")
+        print(f"  state        = {state} (dist={dist_now:.4f})")
+        print(f"  v_restore*   = {v_restore_ideal}")
+        print(f"  v_step(real) = {v_step}")
+        print(f"  next_state   = {next_state} (dist={dist_next:.4f})")
+        print("")
+
+        state = next_state
+
+    print("=== FINAL ===")
+    print(f"tick={ctx.tick}\tstate={state}\tdist={physics.distance_to_baseline(state):.4f}")
 
 
 if __name__ == "__main__":
-    # pytest 없이도 그냥 돌려볼 수 있게
-    run_demo_steps()
+    run_demo_sequence()
