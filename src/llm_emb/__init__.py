@@ -8,7 +8,7 @@ LLM 기반 텍스트 임베딩을 생성·분석·검증하기 위한 유틸리�
 from .emb_model import LLMEmbeddingModel
 from .emb_analysis import run_pca, run_kmeans, plot_pca, extract_axes
 from .emb_verify import find_nearest, decode
-from .emb_pipeline import run_pipeline
+from .emb_pipeline import run_pca_pipeline
 
 __all__ = [
     "LLMEmbeddingModel",
@@ -18,5 +18,5 @@ __all__ = [
     "extract_axes",
     "find_nearest",
     "decode",
-    "run_pipeline",
+    "run_pca_pipeline",
 ]
