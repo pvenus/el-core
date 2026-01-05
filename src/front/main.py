@@ -7,6 +7,7 @@ sys.path.append(os.path.dirname(__file__))
 import streamlit as st
 from overview import render_overview
 from agent_gallery import render_agent_gallery
+from embedding import render_embedding
 
 # -------------------------
 # Streamlit App: EL-Core UI
@@ -43,6 +44,7 @@ nav_button("Agent Gallery")
 nav_button("Scenario Lab")
 nav_button("Compare")
 nav_button("Analytics")
+nav_button("Embedding")
 
 menu = st.session_state.menu
 
@@ -81,3 +83,5 @@ elif menu == "Compare":
     render_compare()
 elif menu == "Analytics":
     render_analytics()
+elif menu == "Embedding":
+    render_embedding()
