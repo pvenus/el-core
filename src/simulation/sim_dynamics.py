@@ -2,71 +2,68 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Dict, List, Optional
-import random
+from typing import Dict, List, Tuple
 
-from .sim_config import SimulationConfig
-from .dto import AgentState
-
-from src.helper.vector import add, scale, l2_distance, normalize, clamp_norm
+from src.helper.vector import add
+from .dto.agent import AgentSpec, AgentState
+from .dto.impact import Impact
+from .dto.turn import Transition
 
 from .sim_types import Vector, Vars
 
-def _apply_vars_delta(prev_vars: Vars, delta_vars: Optional[Vars], cfg: SimulationConfig) -> Vars:
-    if not delta_vars:
-        return dict(prev_vars)
-
-    out = dict(prev_vars)
-    for k, dv in delta_vars.items():
-        out[k] = float(out.get(k, 0.0)) + float(dv)
-    return out
-
-
-def dynamics_step(
-    prev: AgentState,
-    delta_vec: Vector,
-    cfg: SimulationConfig,
-    rng: Optional[random.Random] = None,
-    delta_vars: Optional[Vars] = None,
-) -> AgentState:
+def _sum_impacts(spec: AgentSpec, impacts: List[Impact]) -> Tuple[Vector, Vars]:
     """
-    순수 전이 커널.
-    - 입력: 이전 상태 + (이번 턴에 적용할) 총 델타 벡터
-    - 출력: 다음 상태
+    활성 impacts를 합산하여 (sum_delta_vec, sum_delta_vars)를 만든다.
+    - clamp/normalize/damping/noise 등 "impact 외 규칙"은 적용하지 않음 (형 요구)
     """
-    if rng is None:
-        rng = random.Random()
+    dim = spec.dim
+    sum_vec = [0.0 for _ in range(dim)]
+    sum_vars: Vars = {}
+
+    for imp in impacts:
+        imp.validate(dim)
+
+        dv = imp.delta_vec()   # unit(direction) * magnitude
+        sum_vec = add(sum_vec, dv)
+
+        if imp.delta_vars:
+            for k, v in imp.delta_vars.items():
+                sum_vars[k] = float(sum_vars.get(k, 0.0)) + float(v)
+
+    return sum_vec, sum_vars
+
+
+def apply(spec: AgentSpec, prev: AgentState, impacts: List[Impact]) -> Transition:
+    """
+    dynamics = physics (순수 전이)
+
+    - runner가 관리하는 impacts(활성 스택 스냅샷)를 받아
+    - delta 합산 -> state 전이 적용
+    - Transition 반환
+    """
+    prev.validate(spec)
+
+    delta_vec, delta_vars = _sum_impacts(spec, impacts)
 
     if len(prev.current_vec) != len(delta_vec):
         raise ValueError(f"delta_vec dim mismatch: {len(prev.current_vec)} != {len(delta_vec)}")
 
-    # 1) delta 적용
     next_vec = add(prev.current_vec, delta_vec)
 
-    # 2) damping (0~1). 1이면 유지, 0이면 완전 소멸 (현재 구현은 "감쇠 적용" 스타일)
-    if cfg.damping is not None:
-        d = float(cfg.damping)
-        next_vec = scale(next_vec, max(0.0, min(1.0, d)))
+    next_vars = dict(prev.vars)
+    for k, v in delta_vars.items():
+        next_vars[k] = float(next_vars.get(k, 0.0)) + float(v)
 
-    # 3) noise (옵션)
-    if cfg.noise_std and cfg.noise_std > 0:
-        std = float(cfg.noise_std)
-        noise = [(rng.gauss(0.0, std)) for _ in next_vec]
-        next_vec = add(next_vec, noise)
+    next_state = replace(prev, current_vec=next_vec, vars=next_vars)
 
-    # 4) normalize (옵션)
-    if cfg.normalize_vec:
-        next_vec = normalize(next_vec)
+    # metrics는 "순수 관측치"만 (원하면 이후 확장)
+    metrics = {
+        "n_impacts": len(impacts),
+    }
 
-    # 5) clamp norm (옵션)
-    if cfg.clamp_norm is not None:
-        next_vec = clamp_norm(next_vec, float(cfg.clamp_norm))
-
-    # 6) vars update (옵션)
-    next_vars = _apply_vars_delta(prev.vars or {}, delta_vars, cfg)
-
-    return replace(prev, current_vec=next_vec, vars=next_vars)
-
-
-def distance_to_comfort(state: AgentState) -> float:
-    return l2_distance(state.current_vec, state.comfort_vec)
+    return Transition(
+        next_state=next_state,
+        sum_delta_vec=delta_vec,
+        sum_delta_vars=delta_vars,
+        metrics=metrics,
+    )

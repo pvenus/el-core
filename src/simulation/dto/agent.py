@@ -4,9 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-Vector = List[float]
-Vars = Dict[str, float]
-Meta = Dict[str, Any]
+from ..sim_types import Vector, Vars, Meta
 
 
 @dataclass(frozen=True)
