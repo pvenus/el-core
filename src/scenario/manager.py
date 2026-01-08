@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .dto.scenario import Scenario
 from .dto.choice import Choice
 from .dto.selection_ctx import SelectionContext
-from src.test.helper.vector import l2_distance
+from src.helper.vector import l2_distance
 import json
 
 class ScenarioManager:

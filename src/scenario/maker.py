@@ -23,9 +23,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 import hashlib
-import re
+import os
 
-from src.test.helper.vector import normalize_vector
+from src.llm.embedding import embed_text_normalized
 
 
 # ---------------------------
@@ -52,33 +52,57 @@ class ActionClassifier(Protocol):
 # ---------------------------
 
 class DeterministicHashEmbedder:
-    """Deterministic pseudo-embedding.
+    """Deterministic pseudo-embedding (hash backend).
 
-    Replace later with your real embedding model.
-    This keeps the rest of the system testable right now.
-
-    Output is roughly in [-1, 1] then L2-normalized.
+    Scenario/maker 단계에서 모델 없이도 재현 가능한 임베딩을 제공한다.
+    실제 모델로 교체하더라도 embedding.py 내부 backend 확장으로 흡수한다.
     """
 
     def embed(self, text: str, dim: int) -> List[float]:
-        # Create enough bytes using repeated sha256 chaining
-        seed = text.encode("utf-8")
-        buf = b""
-        h = seed
-        while len(buf) < dim * 4:
-            h = hashlib.sha256(h).digest()
-            buf += h
+        return embed_text_normalized(text, dim=dim, backend="hash").tolist()
 
-        # Map to floats in [-1,1]
-        out: List[float] = []
-        for i in range(dim):
-            chunk = buf[i * 4 : (i + 1) * 4]
-            u = int.from_bytes(chunk, "little", signed=False)
-            # [0, 2^32-1] -> [-1, 1]
-            x = (u / 4294967295.0) * 2.0 - 1.0
-            out.append(float(x))
 
-        return normalize_vector(out)
+class LlamaCppEmbedder:
+    """llama_cpp 기반 임베더.
+
+    - backend="llama_cpp"를 사용하여 embedding.py가 (pooling + normalize)까지 처리한다.
+    - llama_cpp가 설치되어 있지 않으면 ImportError가 발생한다.
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        *,
+        n_ctx: int = 2048,
+        n_threads: Optional[int] = None,
+        n_gpu_layers: int = 0,
+        embedding: bool = True,
+        verbose: bool = False,
+    ):
+        try:
+            from llama_cpp import Llama  # type: ignore
+        except Exception as e:
+            raise ImportError(
+                "llama_cpp가 설치되어 있지 않습니다. `pip install llama-cpp-python` 후 다시 시도하세요."
+            ) from e
+
+        if not model_path:
+            raise ValueError("model_path is required for LlamaCppEmbedder")
+        self.model_path = model_path
+
+        # llama_cpp 기본값은 환경/플랫폼에 따라 다를 수 있어 명시적으로 지정
+        self.llm = Llama(
+            model_path=model_path,
+            n_ctx=int(n_ctx),
+            n_threads=(int(n_threads) if n_threads is not None else None),
+            n_gpu_layers=int(n_gpu_layers),
+            embedding=bool(embedding),
+            verbose=bool(verbose),
+        )
+
+    def embed(self, text: str, dim: int) -> List[float]:
+        # dim은 hash backend에서만 강제용으로 쓰고, llama_cpp에서는 참고값/검증값 정도로 둔다.
+        return embed_text_normalized(text, dim=dim, backend="llama_cpp", llm=self.llm).tolist()
 
 
 class SimpleKeywordTagger:
@@ -229,7 +253,37 @@ class ChoiceMakerPipeline:
         action_classifier: Optional[ActionClassifier] = None,
     ):
         self.dim = int(dim)
-        self.embedder = embedder or DeterministicHashEmbedder()
+
+        # Embedder selection:
+        # - If embedder is explicitly provided, use it.
+        # - Else, if EL_EMBED_BACKEND=llama_cpp, load llama_cpp model from EL_LLM_MODEL_PATH.
+        # - Otherwise, default to deterministic hash embedding.
+        if embedder is not None:
+            self.embedder = embedder
+        else:
+            backend = os.getenv("EL_EMBED_BACKEND", "hash").strip().lower()
+            if backend == "llama_cpp":
+                model_path = os.getenv("EL_LLM_MODEL_PATH", "").strip()
+                if not model_path:
+                    raise ValueError(
+                        "EL_EMBED_BACKEND=llama_cpp 인 경우, 환경변수 EL_LLM_MODEL_PATH에 모델 경로를 지정해야 합니다."
+                    )
+                n_ctx = int(os.getenv("EL_LLM_N_CTX", "2048"))
+                n_threads_env = os.getenv("EL_LLM_THREADS", "").strip()
+                n_threads = int(n_threads_env) if n_threads_env else None
+                n_gpu_layers = int(os.getenv("EL_LLM_GPU_LAYERS", "0"))
+                verbose = os.getenv("EL_LLM_VERBOSE", "0").strip() in ("1", "true", "True")
+
+                self.embedder = LlamaCppEmbedder(
+                    model_path=model_path,
+                    n_ctx=n_ctx,
+                    n_threads=n_threads,
+                    n_gpu_layers=n_gpu_layers,
+                    verbose=verbose,
+                )
+            else:
+                self.embedder = DeterministicHashEmbedder()
+
         self.tagger = tagger or SimpleKeywordTagger()
         self.action_classifier = action_classifier or SimpleActionClassifier()
 
