@@ -70,6 +70,6 @@ if __name__ == "__main__":
     run_policy(
         model_path="data/models/policy_reinforce.npz",
         steps=3,
-        seed=12,
+        seed=12345665,
         greedy=True,
     )

@@ -103,6 +103,32 @@
       "enabled": false,
       "dim": 6,
       "round_id": 1
+    },
+    {
+      "choice_id": "r2_breath_a9993e",
+      "display_text": "test",
+      "tags": [],
+      "constraints": null,
+      "effects": {
+        "add_tags": []
+      },
+      "action": {
+        "action_id": "breath",
+        "duration": 1,
+        "magnitude": 0.25,
+        "embed_text": "abc",
+        "embed_vec": [
+          0.337421715259552,
+          0.5712603330612183,
+          0.5040965676307678,
+          -0.4966810941696167,
+          0.1892225444316864,
+          0.15230734646320343
+        ]
+      },
+      "enabled": true,
+      "dim": 6,
+      "round_id": 2
     }
   ]
 }

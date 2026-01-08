@@ -36,7 +36,9 @@ import numpy as np
 # Local imports (these modules exist in the same src/test package in this project)
 from sim_agent import SimAgent
 
-from sim_scenario import ScenarioManager, ScenarioSession, build_demo_scenario
+from src.scenario.manager import ScenarioManager
+from src.scenario.session import ScenarioSession
+from src.scenario.builder import build_demo_scenario
 
 
 # --- ScenarioSession round_id compatibility helper ---

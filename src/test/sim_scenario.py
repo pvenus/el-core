@@ -26,9 +26,9 @@ You can later plug in:
 
 from __future__ import annotations
 
-from src.scenario.dto import SelectionContext
-from src.scenario import build_demo_scenario
-from src.scenario import ScenarioSession
+from src.scenario.dto.selection_ctx import SelectionContext
+from src.scenario.builder import build_demo_scenario
+from src.scenario.session import ScenarioSession
 
 if __name__ == "__main__":
     mgr = build_demo_scenario(dim=6)

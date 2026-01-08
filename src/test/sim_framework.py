@@ -26,10 +26,10 @@ from typing import Callable, Dict, List, Optional, Tuple, Sequence
 from sim_agent import SimAgent, AgentState, add, scale, normalize
 
 # Scenario (tag-based) selection layer
-from src.scenario import build_demo_scenario
-from src.scenario import ScenarioManager
-from src.scenario.dto import SelectionContext
-from sim_scenario import ScenarioSession
+from src.scenario.builder import build_demo_scenario
+from src.scenario.manager import ScenarioManager
+from src.scenario.dto.selection_ctx import SelectionContext
+from src.scenario.session import ScenarioSession
 
 
 # -----------------------------
