@@ -1,0 +1,108 @@
+{
+  "items": [
+    {
+      "choice_id": "r1_breath_a94a8f",
+      "display_text": "test",
+      "tags": [],
+      "constraints": null,
+      "effects": {
+        "add_tags": []
+      },
+      "action": {
+        "action_id": "breath",
+        "duration": 1,
+        "magnitude": 0.25,
+        "embed_text": "test",
+        "embed_vec": [
+          0.010446072556078434,
+          -0.15261663496494293,
+          0.18948470056056976,
+          -0.6112949848175049,
+          -0.5796460509300232,
+          -0.48064902424812317
+        ]
+      },
+      "enabled": true,
+      "dim": 6,
+      "round_id": 1
+    },
+    {
+      "choice_id": "r1_breath_7110ed",
+      "display_text": "1234",
+      "tags": [],
+      "constraints": null,
+      "effects": {
+        "add_tags": []
+      },
+      "action": {
+        "action_id": "breath",
+        "duration": 1,
+        "magnitude": 0.25,
+        "embed_text": "1234",
+        "embed_vec": [
+          -0.4924754798412323,
+          -0.2807767391204834,
+          0.3028598427772522,
+          -0.19237826764583588,
+          0.5767669081687927,
+          -0.46608880162239075
+        ]
+      },
+      "enabled": true,
+      "dim": 6,
+      "round_id": 1
+    },
+    {
+      "choice_id": "r1_breath_40bd00",
+      "display_text": "123",
+      "tags": [],
+      "constraints": null,
+      "effects": {
+        "add_tags": []
+      },
+      "action": {
+        "action_id": "breath",
+        "duration": 1,
+        "magnitude": 0.25,
+        "embed_text": "123",
+        "embed_vec": [
+          -0.3776569664478302,
+          0.28734081983566284,
+          -0.2433527261018753,
+          0.5544268488883972,
+          -0.6387625932693481,
+          -0.013532934710383415
+        ]
+      },
+      "enabled": true,
+      "dim": 6,
+      "round_id": 1
+    },
+    {
+      "choice_id": "r1_breath_9a3e61",
+      "display_text": "444",
+      "tags": [],
+      "constraints": null,
+      "effects": {
+        "add_tags": []
+      },
+      "action": {
+        "action_id": "breath",
+        "duration": 1,
+        "magnitude": 0.25,
+        "embed_text": "444",
+        "embed_vec": [
+          0.6693516969680786,
+          0.22928504645824432,
+          0.23943214118480682,
+          -0.2365906983613968,
+          -0.2050228863954544,
+          -0.5865657925605774
+        ]
+      },
+      "enabled": false,
+      "dim": 6,
+      "round_id": 1
+    }
+  ]
+}

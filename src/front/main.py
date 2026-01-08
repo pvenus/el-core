@@ -8,6 +8,7 @@ import streamlit as st
 from overview import render_overview
 from agent_gallery import render_agent_gallery
 from embedding import render_embedding
+from scenario import render_scenario_lab
 
 # -------------------------
 # Streamlit App: EL-Core UI
@@ -53,11 +54,6 @@ st.sidebar.divider()
 with st.sidebar.expander("Global Filters", expanded=False):
     st.selectbox("Dataset", ["demo"], index=0)
     st.checkbox("Use cached data", value=True)
-
-def render_scenario_lab():
-    st.title("Scenario Lab")
-    st.caption("Hold state constant, swap agents, observe diverging actions.")
-    st.info("TODO: Add scenario selector + state editor + action heatmap.")
 
 
 def render_compare():
