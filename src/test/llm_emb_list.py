@@ -1,7 +1,7 @@
 from llama_cpp import Llama
 from pathlib import Path
 import json
-from statistics import mean
+from statistics import meanㄴㄴ
 
 
 # ----------------------------------------
