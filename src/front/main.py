@@ -9,6 +9,7 @@ from overview import render_overview
 from agent_gallery import render_agent_gallery
 from embedding import render_embedding
 from scenario import render_scenario_lab
+from ontology import render_ontology_lab
 
 # -------------------------
 # Streamlit App: EL-Core UI
@@ -43,7 +44,7 @@ def nav_button(label):
 nav_button("Overview")
 nav_button("Agent Gallery")
 nav_button("Scenario Lab")
-nav_button("Compare")
+nav_button("Ontology Lab")
 nav_button("Analytics")
 nav_button("Embedding")
 
@@ -75,8 +76,8 @@ elif menu == "Agent Gallery":
     render_agent_gallery()
 elif menu == "Scenario Lab":
     render_scenario_lab()
-elif menu == "Compare":
-    render_compare()
+elif menu == "Ontology Lab":
+    render_ontology_lab()
 elif menu == "Analytics":
     render_analytics()
 elif menu == "Embedding":

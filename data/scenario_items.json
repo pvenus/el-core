@@ -100,7 +100,7 @@
           -0.5865657925605774
         ]
       },
-      "enabled": false,
+      "enabled": true,
       "dim": 6,
       "round_id": 1
     },
@@ -129,6 +129,32 @@
       "enabled": true,
       "dim": 6,
       "round_id": 2
+    },
+    {
+      "choice_id": "r1_breath_aaf4c6",
+      "display_text": "안녕하세요",
+      "tags": [],
+      "constraints": null,
+      "effects": {
+        "add_tags": []
+      },
+      "action": {
+        "action_id": "breath",
+        "duration": 1,
+        "magnitude": 0.25,
+        "embed_text": "hello",
+        "embed_vec": [
+          0.35492390394210815,
+          -0.6900736093521118,
+          -0.5220937132835388,
+          0.1880139410495758,
+          -0.2184317409992218,
+          -0.20538738369941711
+        ]
+      },
+      "enabled": true,
+      "dim": 6,
+      "round_id": 1
     }
   ]
 }
