@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional
 
-from src.helper.vector import l2_distance
+from .sim_vector import l2_distance
 from .sim_types import Vector, Vars
 
 from .dto.agent import AgentSpec, AgentState

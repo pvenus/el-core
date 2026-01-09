@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from src.helper.vector import normalize
+from ..sim_vector import normalize
+
 from ..sim_types import Vector, Vars, Meta
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Dict, List, Tuple
 
-from src.helper.vector import add
+from .sim_vector import add
 from .dto.agent import AgentSpec, AgentState
 from .dto.impact import Impact
 from .dto.turn import Transition

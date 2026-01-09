@@ -1,5 +1,5 @@
 # sim_engine/dto/__init__.py
-from .agent_state import AgentState
+from .agent import AgentState
 from .impact import Impact
 from .turn import TurnInput, TurnResult
 
