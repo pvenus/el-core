@@ -140,7 +140,47 @@ def render_ontology_lab():
 
     # Seed defaults if empty
     if not items:
-        seed = ["Joy", "Elation", "Calmness", "Pride", "Hope", "Sadness", "Anger", "Fear", "Disgust", "Resignation"]
+        seed = [
+            # Tier 0
+            "joy",
+            "anger",
+            "sorrow",
+            "fear",
+            "love",
+            "aversion",
+            "lust",
+
+            # Tier 1
+            #"trust",
+            #"anticipation",
+            #"surprise",
+            #"contempt",
+
+            # Tier 2
+            #"shame",
+            #"guilt",
+            #"pride",
+            #"envy",
+
+            # Tier 3
+            #"helplessness",
+            #"resignation",
+            #"despair",
+            #"apathy",
+
+            # Tier 4
+            #"curiosity",
+            #"confusion",
+            #"certainty",
+            #"doubt",
+
+            # Tier 5 (optional)
+            #"panic",
+            #"relief",
+            #"awe",
+            #"loneliness",
+            #"hatred",
+        ]
         items = [{"word": w, "enabled": True} for w in seed]
         _save_emotions(store_path, items)
         st.session_state["emo_items"] = items
