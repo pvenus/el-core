@@ -489,7 +489,7 @@ class Reasoner:
         vec: Sequence[float],
         *,
         category_id: Optional[str] = None,
-        top_k_anchors: int = 5,
+        top_k_anchors: int = 7,
         top_k_concepts: int = 10,
         min_anchor_score: float = -1.0,
         min_concept_score: float = -1.0,
@@ -565,7 +565,7 @@ class Reasoner:
                 )
             )
         _p(f"[_nearest_anchors_by_vector] summary: missing_vec={missing_vec} dim_mismatch={dim_mismatch} cosine_err={cosine_err} kept={kept}")
-        scored.sort(key=lambda x: x.score, reverse=True)
+        #scored.sort(key=lambda x: x.score, reverse=True)
         return scored[: max(0, int(top_k))]
 
     def _nearest_concepts_by_vector(

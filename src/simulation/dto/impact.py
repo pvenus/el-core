@@ -16,13 +16,12 @@ def _safe_normalize(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 @dataclass
 class Impact:
     """
-        direction: 방향 벡터 (dim,)
-        magnitude: 크기 (스칼라)
-        duration: 남은 스텝 수 (>=1이면 적용 중, tick 후 0이 되면 만료 처리)
-        delta_vars: vars에 더해지는 변화량
-        profile: 메타데이터(디버그/태그/출처 등)
+    direction: 방향 벡터 (dim,)
+    magnitude: 크기 (스칼라)
+    duration: 남은 스텝 수 (>=1이면 적용 중, tick 후 0이 되면 만료 처리)
+    delta_vars: vars에 더해지는 변화량
+    profile: 메타데이터(디버그/태그/출처 등)
     """
-
     direction: np.ndarray
     magnitude: float
     duration: int = 1

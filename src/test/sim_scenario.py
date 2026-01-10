@@ -27,11 +27,12 @@ You can later plug in:
 from __future__ import annotations
 
 from src.scenario.dto.selection_ctx import SelectionContext
-from src.scenario.builder import build_demo_scenario
+from src.scenario.builder import build_simple_demo_scenario
 from src.scenario.session import ScenarioSession
 
+
 if __name__ == "__main__":
-    mgr = build_demo_scenario(dim=6)
+    mgr = build_simple_demo_scenario()
 
     # Example emotion state with tag filtering
     ctx = SelectionContext(
@@ -44,7 +45,9 @@ if __name__ == "__main__":
     print(mgr.to_json())
     print("\nRound 1 ranked:")
     for item in mgr.rank_choices(1, ctx, top_k=3):
-        print(f"- {item['choice_id']} score={item['score']:.3f} tags={item['tags']} :: {item['display_text']}")
+        print(
+            f"- {item['choice_id']} score={item['score']:.3f} tags={item['tags']} :: {item['display_text']}"
+        )
 
     choice = mgr.select_choice(1, ctx)
     print("\nSelected for round 1:")
@@ -59,9 +62,4 @@ if __name__ == "__main__":
 
     # Take an explicit choice, then continue to next round regardless
     step1 = session.step(choice_id="r1_c")
-    print("Step1:", step1["choice_id"], step1["display_text"])
-    print("memory_tags:", step1["memory_tags"], "current_vec:", step1["current_vec"])
-
-    # Auto-select next round using updated memory_tags/current_vec
-    step2 = session.step()
-    print("Step2:", step2["choice_id"], step2["display_text"])
+    print("Step1:", step1)

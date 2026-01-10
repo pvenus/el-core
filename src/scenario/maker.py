@@ -20,11 +20,14 @@ If `Choice` is importable, you can opt-in via `to_choice_object()`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 import hashlib
+import numpy as np
 from pathlib import Path
 from src.llm.embedding import embed_text_normalized
+from src.simulation.dto.impact import Impact
+from src.scenario.dto.choice_artifact import ChoiceArtifact
 
 
 # ---------------------------
@@ -136,6 +139,151 @@ class LlamaCppEmbedder:
 
 
 class DefaultOntologyResolver:
+    def infer_anchors_direction(
+        self,
+        vec: List[float],
+        *,
+        category_id: Optional[str] = None,
+        top_k_anchors: Optional[int] = None,
+        min_score: Optional[float] = None,
+    ) -> Optional[List[float]]:
+        """Return an *anchor-score* direction vector.
+
+        NOTE:
+        - This does NOT try to reconstruct an embedding-space direction.
+        - Instead, it returns the anchor similarity scores as a vector:
+            direction[i] = score(anchor_ids[i])
+        - The corresponding anchor ids (same order) are stored in
+          `self._last_anchor_ids` for downstream use/debug.
+
+        This matches the user's intent:
+          joy score, anger score, ... -> direction vector
+        """
+        r = self._get_reasoner()
+        if r is None:
+            self._last_anchor_ids = []
+            return None
+
+        cat = category_id if category_id is not None else self._category_id
+        tka = self._top_k_anchors if top_k_anchors is None else int(top_k_anchors)
+        ms = self._min_score if min_score is None else float(min_score)
+
+        try:
+            res = r.infer_from_vector(
+                vec,
+                category_id=cat,
+                top_k_anchors=tka,
+                top_k_concepts=1,
+                min_score=ms,
+                query_label="maker.embed_vec",
+            )
+        except TypeError:
+            try:
+                res = r.infer_from_vector(
+                    vec,
+                    category_name=cat,
+                    top_k_anchors=tka,
+                    top_k_concepts=1,
+                    min_score=ms,
+                    query_label="maker.embed_vec",
+                )
+            except TypeError:
+                try:
+                    res = r.infer_from_vector(
+                        vec,
+                        category=cat,
+                        top_k_anchors=tka,
+                        top_k_concepts=1,
+                        min_score=ms,
+                        query_label="maker.embed_vec",
+                    )
+                except TypeError:
+                    res = r.infer_from_vector(vec)
+
+        anchors = None
+        for attr in ("top_anchors", "anchors", "nearest_anchors", "anchor_scores"):
+            if hasattr(res, attr):
+                anchors = getattr(res, attr)
+                break
+        if not anchors:
+            self._last_anchor_ids = []
+            return None
+
+        def _get_anchor_id(a: Any) -> Optional[str]:
+            if isinstance(a, dict):
+                return a.get("id") or a.get("anchor_id") or a.get("name") or a.get("label")
+            return (
+                getattr(a, "id", None)
+                or getattr(a, "anchor_id", None)
+                or getattr(a, "name", None)
+                or getattr(a, "label", None)
+            )
+
+        def _get_score(item: Any) -> Optional[float]:
+            s_val = None
+            if isinstance(item, dict):
+                s_val = item.get("score")
+                if s_val is None:
+                    s_val = item.get("similarity")
+                if s_val is None:
+                    s_val = item.get("sim")
+                if s_val is None:
+                    s_val = item.get("cosine")
+                if s_val is None:
+                    s_val = item.get("cos")
+                if s_val is None:
+                    s_val = item.get("raw")
+                if s_val is None:
+                    s_val = item.get("raw_score")
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                s_val = item[1]
+            else:
+                s_val = getattr(item, "score", None)
+                if s_val is None:
+                    s_val = getattr(item, "similarity", None)
+                if s_val is None:
+                    s_val = getattr(item, "sim", None)
+                if s_val is None:
+                    s_val = getattr(item, "cosine", None)
+                if s_val is None:
+                    s_val = getattr(item, "cos", None)
+                if s_val is None:
+                    s_val = getattr(item, "raw", None)
+                if s_val is None:
+                    s_val = getattr(item, "raw_score", None)
+
+            if s_val is None:
+                return None
+            try:
+                return float(s_val)
+            except Exception:
+                return None
+
+        anchor_ids: List[str] = []
+        scores: List[float] = []
+
+        for item in anchors:
+            a_obj = item
+            if isinstance(item, (list, tuple)) and len(item) >= 1:
+                a_obj = item[0]
+
+            aid = _get_anchor_id(a_obj)
+            sc = _get_score(item)
+            if aid is None or sc is None:
+                continue
+            anchor_ids.append(str(aid))
+            scores.append(float(sc))
+
+        # Persist for consumers/debug
+        self._last_anchor_ids = anchor_ids
+
+        if not scores:
+            return None
+        v = np.asarray(scores, dtype=np.float32)
+        n = float(np.linalg.norm(v))
+        if n <= 0:
+            return None
+        return (v / n).tolist()
     """Ontology-backed nearest-node resolver (best-effort).
 
     It will try to import your existing ontology builder/reasoner.
@@ -147,7 +295,7 @@ class DefaultOntologyResolver:
         *,
         ontology_obj: Any = None,
         category_id: Optional[str] = "emotion",
-        top_k_anchors: int = 0,
+        top_k_anchors: int = 7,
         min_score: float = -1.0,
     ):
         self._ontology_obj = ontology_obj
@@ -183,9 +331,11 @@ class DefaultOntologyResolver:
 
             try:
                 onto = build_ontology_default_paths()
+                self._ontology_obj = onto
             except Exception:
                 return None
 
+        self._ontology_obj = onto
         try:
             self._reasoner = Reasoner(onto)
         except Exception:
@@ -441,55 +591,6 @@ class DefaultOntologyResolver:
 
         return out
 
-
-# ---------------------------
-# Data models
-# ---------------------------
-
-
-@dataclass
-class ChoiceArtifact:
-    """Output of the maker pipeline (transport-friendly)."""
-
-    choice_id: str
-    round_id: int
-    display_text: str
-    embed_text: str
-    concepts: List[Dict[str, Any]]
-    embed_vec: List[float]
-    # optional / derived (must come after non-default fields)
-    ontology_best: Optional[Dict[str, Any]] = None
-    constraints: Optional[Dict[str, Any]] = None
-
-    def to_choice_payload(self) -> Dict[str, Any]:
-        """Return a payload compatible with Choice.create(...)
-
-        NOTE: This returns only data. Actual object construction lives elsewhere.
-        """
-        return {
-            "choice_id": self.choice_id,
-            "display_text": self.display_text,
-            "concepts": list(self.concepts),
-            "ontology_best": (dict(self.ontology_best) if isinstance(self.ontology_best, dict) else None),
-            "constraints": self.constraints,
-            "embed_text": self.embed_text,
-            "embed_vec": list(self.embed_vec),
-        }
-
-    def to_choice_object(self) -> Any:
-        """Best-effort conversion to a real Choice object if available."""
-        try:
-            # Adjust import path if your project keeps Choice elsewhere.
-            from src.test.sim_scenario import Choice  # type: ignore
-        except Exception:
-            try:
-                from sim_scenario import Choice  # type: ignore
-            except Exception:
-                return None
-
-        return Choice.create(**self.to_choice_payload())
-
-
 # ---------------------------
 # Text normalization
 # ---------------------------
@@ -541,6 +642,7 @@ class ChoiceMakerPipeline:
 
         self.ontology_resolver = ontology_resolver or DefaultOntologyResolver()
         self.concept_inferer = concept_inferer or self.ontology_resolver
+        self.rng = np.random.default_rng(42)
 
     def make_choice(
         self,
@@ -554,7 +656,7 @@ class ChoiceMakerPipeline:
         """Create one ChoiceArtifact from display_text.
 
         `overrides` can partially override derived fields, e.g.:
-          {"embed_text": "...", "embed_vec": [...], "concepts": [...], "ontology_category_id": "...", "top_k_concepts": 5, "min_score": -1.0, "constraints": {...}}
+          {"embed_text": "...", "embed_vec": [...], "concepts": [...], "ontology_category_id": "...", "top_k_concepts": 5, "min_score": -1.0, "impact": {...}}
         """
         overrides = overrides or {}
 
@@ -629,7 +731,39 @@ class ChoiceMakerPipeline:
         except Exception:
             ontology_best = None
 
-        constraints = overrides.get("constraints")
+        # Construct Impact.direction as an *anchor-score vector* (NOT an embedding vector)
+        direction_list: Optional[List[float]] = None
+        anchor_ids: List[str] = []
+        try:
+            if hasattr(self.ontology_resolver, "infer_anchors_direction"):
+                direction_list = self.ontology_resolver.infer_anchors_direction(
+                    embed_vec,
+                    category_id=(
+                        None
+                        if overrides.get("ontology_category_id", "emotion") is None
+                        else str(overrides.get("ontology_category_id", "emotion"))
+                    ),
+                    top_k_anchors=int(overrides.get("top_k_anchors", 7)),
+                    min_score=float(overrides.get("min_score") or -1.0),
+                )
+                # Best-effort: fetch anchor id ordering if resolver stored it
+                anchor_ids = list(getattr(self.ontology_resolver, "_last_anchor_ids", []) or [])
+        except Exception:
+            direction_list = None
+            anchor_ids = []
+
+        if isinstance(direction_list, list) and len(direction_list) > 0:
+            direction = np.asarray(direction_list, dtype=np.float32)
+            duration = max(1, int(float(direction.sum())))
+        else:
+            direction = np.zeros(0, dtype=np.float32)
+            duration = 1
+        impact = Impact(
+            direction=direction,
+            magnitude=1.0,
+            duration=duration,
+            profile={"ontology_best": ontology_best, "anchor_ids": anchor_ids},
+        )
 
         # Stable IDs if omitted
         if choice_id is None:
@@ -645,7 +779,7 @@ class ChoiceMakerPipeline:
             concepts=list(concepts),
             embed_vec=embed_vec,
             ontology_best=ontology_best,
-            constraints=constraints if isinstance(constraints, dict) else None,
+            impact=impact,
         )
 
         if debug:
@@ -653,6 +787,17 @@ class ChoiceMakerPipeline:
             print("[MAKER] embed_text=", embed_text)
             print("[MAKER] concepts=", [{"id": c.get("id"), "label": c.get("label"), "score": c.get("score")} if isinstance(c, dict) else c for c in concepts])
             print("[MAKER] ontology_best=", ontology_best)
+            dir_head = impact.direction[:8].tolist() if isinstance(impact.direction, np.ndarray) else []
+            print(
+                "[MAKER] impact=",
+                {
+                    "magnitude": impact.magnitude,
+                    "duration": impact.duration,
+                    "delta_vars": impact.delta_vars,
+                    "profile": impact.profile,
+                    "direction_head": [float(x) for x in dir_head],
+                },
+            )
             print("[MAKER] embed_vec=", [round(x, 4) for x in embed_vec])
 
         return art

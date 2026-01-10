@@ -19,10 +19,6 @@ VarsTemplateMode = Literal["merge", "replace"]
 
 @dataclass
 class SimulationManager:
-    """
-    - 외부는 Manager만 상호작용
-    - SimAgent는 Manager가 내부에서 생성/관리
-    """
     space_spec: VectorSpaceSpec
     agents: list[SimAgent]
     runner: StepRunner | None = None
