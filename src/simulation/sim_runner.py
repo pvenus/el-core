@@ -20,10 +20,10 @@ class StepRunner:
         results: list[AgentStepResult] = []
 
         picked = pipeline_quick_test()
+        impacts = []
+        impacts.append(picked.impact)
         for agent_id, agent in agents.items():
             print(f"inject impact {agent_id} {picked.impact}")
-            impacts = []
-            impacts.append(picked.impact)
             agent.inject_impacts(impacts)
 
         # 1) impacts 주입
@@ -34,8 +34,6 @@ class StepRunner:
 
         # 2) 각 agent 업데이트
         for agent_id, agent in agents.items():
-            injected = step_input.impacts_by_agent.get(agent_id, [])
-
             before_vec = agent.state.current_vec.copy()
             before_vars = dict(agent.state.vars) if agent.state.vars is not None else {}
 
@@ -63,7 +61,7 @@ class StepRunner:
                     after_vec=after_vec,
                     before_vars=before_vars,
                     after_vars=after_vars,
-                    injected_impacts=list(injected),
+                    injected_impacts=list(impacts),
                     expired_impacts=list(expired),
                     active_impacts_after=list(agent.active_impacts),
                     metrics=metrics,
