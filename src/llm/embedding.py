@@ -1,8 +1,11 @@
 import hashlib
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Iterable
 
 import numpy as np
 
+# ============================================================
+# Public API (ONLY these should be used outside this file)
+# ============================================================
 
 def embed_texts_normalized(
     texts: Sequence[str],
@@ -12,38 +15,48 @@ def embed_texts_normalized(
     llm: Optional[object] = None,
 ) -> np.ndarray:
     """
-    텍스트 리스트 -> 임베딩 벡터 -> (필요 시) mean pooling -> L2 normalize 까지를
-    이 파일에서 모두 책임지는 공용 유틸.
+    Shared embedding utility used by ontology / infer / maker.
 
-    현재 지원:
-      - backend="hash": 결정적(deterministic) 해시 기반 임베딩 (모델 없이 테스트/시나리오 생성용)
-
-    확장 예정(이 파일 내에서 확장):
-      - backend="llama_cpp": llama_cpp LLM 객체의 .embed(text) 사용 (llm 인자 필요)
+    Contract:
+      - All returned vectors are L2-normalized
+      - All vectors live in ONE embedding space per backend
+      - Mixing backends for cosine similarity is INVALID
 
     Parameters
     ----------
     texts : Sequence[str]
-        임베딩할 텍스트 리스트
+        Input texts
     dim : int
-        backend="hash"일 때 생성할 임베딩 차원
-        (다른 backend에서는 무시되거나 검증에만 사용될 수 있음)
+        Expected embedding dimension (required for validation)
     backend : str
-        임베딩 백엔드 선택 ("hash", ...)
+        "hash"       : deterministic pseudo-embedding (TEST ONLY)
+        "llama_cpp"  : llama_cpp.Llama.embed() based embedding (PRODUCTION)
     llm : Optional[object]
-        backend가 모델 기반일 때 사용할 LLM 객체 (예: llama_cpp.Llama)
+        Required when backend == "llama_cpp"
 
     Returns
     -------
     np.ndarray
-        shape: (N, D), L2-normalized embedding vectors
+        shape: (N, D), float32, L2-normalized
     """
-    vectors = []
+    if not texts:
+        return np.zeros((0, dim), dtype=np.float32)
+
+    vecs: list[np.ndarray] = []
     for text in texts:
-        vec = _embed_raw(text, dim=dim, backend=backend, llm=llm)
-        vec = _l2_normalize(vec)
-        vectors.append(vec)
-    return np.stack(vectors, axis=0)
+        raw = _embed_raw(text, dim=dim, backend=backend, llm=llm)
+        vec = _l2_normalize(raw)
+        vecs.append(vec)
+
+    out = np.stack(vecs, axis=0).astype(np.float32)
+
+    # Final dimension sanity check
+    if out.shape[1] != dim:
+        raise ValueError(
+            f"Embedding dim mismatch: expected {dim}, got {out.shape[1]} (backend={backend})"
+        )
+
+    return out
 
 
 def embed_text_normalized(
@@ -53,40 +66,49 @@ def embed_text_normalized(
     backend: str = "hash",
     llm: Optional[object] = None,
 ) -> np.ndarray:
-    """단일 텍스트 임베딩 + L2 정규화."""
+    """Single-text version of `embed_texts_normalized`."""
     return embed_texts_normalized([text], dim, backend=backend, llm=llm)[0]
 
 
-# -------------------------
-# Internal helpers (keep in this file)
-# -------------------------
-
+# ============================================================
+# Internal helpers (DO NOT import from outside this file)
+# ============================================================
 
 def _embed_raw(text: str, dim: int, *, backend: str, llm: Optional[object]) -> np.ndarray:
+    text = str(text).strip()
+    if not text:
+        return np.zeros((dim,), dtype=np.float32)
+
     if backend == "hash":
         return _hash_embed_raw(text, dim)
 
     if backend == "llama_cpp":
         if llm is None:
             raise ValueError('backend="llama_cpp" requires llm argument (llama_cpp.Llama instance).')
+
         emb = llm.embed(text)
         vec = _to_sentence_vector(emb)
-        # Optional dim check (do not hard-fail unless dim is obviously mismatched)
-        if dim is not None and isinstance(dim, int) and dim > 0 and vec.shape[0] != dim:
-            # Allow mismatch silently; caller may pass dim for hash only.
-            pass
-        return vec
+
+        if vec.ndim != 1:
+            raise ValueError(f"Invalid llama_cpp embedding shape: {vec.shape}")
+
+        if vec.shape[0] != dim:
+            raise ValueError(
+                f"llama_cpp embedding dim mismatch: expected {dim}, got {vec.shape[0]}"
+            )
+
+        return vec.astype(np.float32)
 
     raise ValueError(f"Unknown embedding backend: {backend!r}")
 
 
-def _to_sentence_vector(emb) -> np.ndarray:
+def _to_sentence_vector(emb: Iterable) -> np.ndarray:
     """
-    llama_cpp embed() 등의 반환 형태(토큰별 리스트 vs 단일 벡터)를
-    문장/텍스트 단일 벡터로 통일한다.
+    Normalize llama_cpp embed() outputs into a single sentence vector.
+    - token-level embeddings -> mean pooling
+    - single vector -> passthrough
     """
-    # 토큰 단위 임베딩인 경우 → mean pooling
-    if isinstance(emb, list) and emb and isinstance(emb[0], (list, tuple)):
+    if isinstance(emb, list) and emb and isinstance(emb[0], (list, tuple, np.ndarray)):
         return np.mean(np.asarray(emb, dtype=np.float32), axis=0)
     return np.asarray(emb, dtype=np.float32)
 
@@ -100,13 +122,14 @@ def _l2_normalize(vec: np.ndarray) -> np.ndarray:
 
 def _hash_embed_raw(text: str, dim: int) -> np.ndarray:
     """
-    모델 없이도 재현 가능한(결정적) pseudo-embedding 생성.
-    - sha256 chaining으로 충분한 바이트 확보
-    - [0, 2^32-1] -> [-1, 1] 매핑
+    Deterministic pseudo-embedding (TEST ONLY).
+    - NOT semantically meaningful
+    - Must NEVER be mixed with model-based embeddings
     """
     seed = text.encode("utf-8")
     buf = b""
     h = seed
+
     while len(buf) < dim * 4:
         h = hashlib.sha256(h).digest()
         buf += h
@@ -117,4 +140,5 @@ def _hash_embed_raw(text: str, dim: int) -> np.ndarray:
         chunk = buf[i * 4 : (i + 1) * 4]
         u = int.from_bytes(chunk, "little", signed=False)
         out[i] = (u / denom) * 2.0 - 1.0
+
     return out

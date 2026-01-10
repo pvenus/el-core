@@ -21,10 +21,9 @@ If `Choice` is importable, you can opt-in via `to_choice_object()`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol
 import hashlib
-import os
-
+from pathlib import Path
 from src.llm.embedding import embed_text_normalized
 
 
@@ -37,13 +36,28 @@ class Embedder(Protocol):
         ...
 
 
-class Tagger(Protocol):
-    def extract_tags(self, text: str) -> List[str]:
+
+class ConceptInferer(Protocol):
+    def infer_concepts(
+        self,
+        vec: List[float],
+        *,
+        category_id: Optional[str] = None,
+        top_k: int = 5,
+        min_score: float = -1.0,
+    ) -> List[Dict[str, Any]]:
         ...
 
 
-class ActionClassifier(Protocol):
-    def classify_action_id(self, text: str, tags: List[str]) -> str:
+
+
+
+
+class OntologyResolver(Protocol):
+    def best_match(self, vec: List[float], *, category_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        ...
+
+    def infer_concepts(self, vec: List[float], *, category_id: Optional[str] = None, top_k: int = 5, min_score: float = -1.0) -> List[Dict[str, Any]]:
         ...
 
 
@@ -59,7 +73,11 @@ class DeterministicHashEmbedder:
     """
 
     def embed(self, text: str, dim: int) -> List[float]:
-        return embed_text_normalized(text, dim=dim, backend="hash").tolist()
+        vec = embed_text_normalized(text, dim=dim, backend="hash")
+        out = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+        if len(out) != int(dim):
+            raise ValueError(f"hash embed dim mismatch: expected {dim}, got {len(out)}")
+        return out
 
 
 class LlamaCppEmbedder:
@@ -73,7 +91,7 @@ class LlamaCppEmbedder:
         self,
         model_path: str,
         *,
-        n_ctx: int = 2048,
+        n_ctx: int = 131072,
         n_threads: Optional[int] = None,
         n_gpu_layers: int = 0,
         embedding: bool = True,
@@ -88,13 +106,13 @@ class LlamaCppEmbedder:
 
         if not model_path:
             raise ValueError("model_path is required for LlamaCppEmbedder")
-        self.model_path = model_path
+        self.model_path = resolve_model_path(model_path)
 
         # llama_cpp 기본값은 환경/플랫폼에 따라 다를 수 있어 명시적으로 지정
         self.llm = Llama(
-            model_path=model_path,
+            model_path=self.model_path,
             n_ctx=int(n_ctx),
-            n_threads=(int(n_threads) if n_threads is not None else None),
+            n_threads=n_threads,
             n_gpu_layers=int(n_gpu_layers),
             embedding=bool(embedding),
             verbose=bool(verbose),
@@ -102,83 +120,332 @@ class LlamaCppEmbedder:
 
     def embed(self, text: str, dim: int) -> List[float]:
         # dim은 hash backend에서만 강제용으로 쓰고, llama_cpp에서는 참고값/검증값 정도로 둔다.
-        return embed_text_normalized(text, dim=dim, backend="llama_cpp", llm=self.llm).tolist()
+        vec = embed_text_normalized(text, dim=dim, backend="llama_cpp", llm=self.llm)
+        # Defensive check: ensure we always return the requested dim
+        if hasattr(vec, "shape") and len(getattr(vec, "shape")) == 1:
+            if int(vec.shape[0]) != int(dim):
+                raise ValueError(f"llama_cpp embed dim mismatch: expected {dim}, got {int(vec.shape[0])}")
+        out = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+        if len(out) != int(dim):
+            raise ValueError(f"llama_cpp embed dim mismatch: expected {dim}, got {len(out)}")
+        return out
 
 
-class SimpleKeywordTagger:
-    """Very small tagger.
 
-    Replace later with ontology-backed tag extraction.
+
+
+
+class DefaultOntologyResolver:
+    """Ontology-backed nearest-node resolver (best-effort).
+
+    It will try to import your existing ontology builder/reasoner.
+    If not available, it safely returns None.
     """
 
-    KEYWORDS = [
-        ("breath", ["grounding", "calming"]),
-        ("breathe", ["grounding", "calming"]),
-        ("safe", ["comforting", "reassuring"]),
-        ("here with you", ["comforting", "support"]),
-        ("tell me", ["listening", "open"]),
-        ("what happened", ["listening", "open"]),
-        ("no filter", ["vent", "expressive"]),
-        ("say it all", ["vent", "expressive"]),
-        ("small step", ["plan", "problem_solving"]),
-        ("one step", ["plan", "problem_solving"]),
-        ("pause", ["avoid", "rest"]),
-        ("later", ["avoid", "rest"]),
-    ]
+    def __init__(
+        self,
+        *,
+        ontology_obj: Any = None,
+        category_id: Optional[str] = "emotion",
+        top_k_anchors: int = 0,
+        min_score: float = -1.0,
+    ):
+        self._ontology_obj = ontology_obj
+        self._reasoner = None
+        self._category_id = category_id
+        self._top_k_anchors = int(top_k_anchors)
+        self._min_score = float(min_score)
 
-    def extract_tags(self, text: str) -> List[str]:
-        t = text.lower()
-        tags: List[str] = []
-        for kw, tg in self.KEYWORDS:
-            if kw in t:
-                for x in tg:
-                    if x not in tags:
-                        tags.append(x)
-        # keep it stable and short for MVP
-        return tags[:4]
+    def _get_reasoner(self) -> Any:
+        if self._reasoner is not None:
+            return self._reasoner
 
+        # Lazy import so maker.py can run without ontology deps.
+        try:
+            # Prefer local package path
+            from src.ontology.infer import Reasoner  # type: ignore
+        except Exception:
+            try:
+                from ontology.infer import Reasoner  # type: ignore
+            except Exception:
+                return None
 
-class SimpleActionClassifier:
-    """Rule-based action classifier for MVP.
+        onto = self._ontology_obj
+        if onto is None:
+            # Build default ontology if possible
+            try:
+                from src.ontology.builder import build_ontology_default_paths  # type: ignore
+            except Exception:
+                try:
+                    from ontology.builder import build_ontology_default_paths  # type: ignore
+                except Exception:
+                    return None
 
-    Replace later with:
-    - ontology mapping (tag->action)
-    - small LLM classifier
-    - hybrid (rules first, model fallback)
-    """
+            try:
+                onto = build_ontology_default_paths()
+            except Exception:
+                return None
 
-    def classify_action_id(self, text: str, tags: List[str]) -> str:
-        t = text.lower()
-        # Strong textual signals
-        if "breath" in t or "breathe" in t:
-            return "breath"
-        if "no filter" in t or "say it all" in t:
-            return "vent"
-        if "small step" in t or "one step" in t or "plan" in t:
-            return "plan"
-        if "pause" in t or "come back" in t or "later" in t:
-            return "avoid"
-        if "tell me" in t or "what happened" in t:
-            return "reach_out"
+        try:
+            self._reasoner = Reasoner(onto)
+        except Exception:
+            return None
 
-        # Tag-based fallback
-        if "vent" in tags:
-            return "vent"
-        if "plan" in tags or "problem_solving" in tags:
-            return "plan"
-        if "grounding" in tags or "calming" in tags:
-            return "breath"
-        if "rest" in tags or "avoid" in tags:
-            return "avoid"
-        if "listening" in tags:
-            return "reach_out"
+        return self._reasoner
 
-        return "breath"  # safe default
+    def best_match(self, vec: List[float], *, category_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        r = self._get_reasoner()
+        if r is None:
+            return None
+
+        cat = category_id if category_id is not None else self._category_id
+
+        # Reasoner API compatibility layer: different projects may name args differently.
+        try:
+            res = r.infer_from_vector(
+                vec,
+                category_id=cat,
+                top_k_anchors=self._top_k_anchors,
+                top_k_concepts=1,
+                min_score=self._min_score,
+                query_label="maker.embed_vec",
+            )
+        except TypeError:
+            try:
+                # Some versions use category_name instead of category_id
+                res = r.infer_from_vector(
+                    vec,
+                    category_name=cat,
+                    top_k_anchors=self._top_k_anchors,
+                    top_k_concepts=1,
+                    min_score=self._min_score,
+                    query_label="maker.embed_vec",
+                )
+            except TypeError:
+                try:
+                    # Some versions use category instead of category_id
+                    res = r.infer_from_vector(
+                        vec,
+                        category=cat,
+                        top_k_anchors=self._top_k_anchors,
+                        top_k_concepts=1,
+                        min_score=self._min_score,
+                        query_label="maker.embed_vec",
+                    )
+                except TypeError:
+                    # Last resort
+                    res = r.infer_from_vector(vec)
+
+        # Try to normalize result shape
+        top = None
+        for attr in ("top_concepts", "concepts", "nearest_concepts"):
+            if hasattr(res, attr):
+                top = getattr(res, attr)
+                break
+        if not top:
+            return None
+
+        item = top[0]
+        # Common shapes: (Concept, score) or {'id':..., 'score':...}
+        if isinstance(item, dict):
+            cid = item.get("id") or item.get("concept_id")
+            label = item.get("label") or item.get("text") or item.get("name")
+            score = item.get("score")
+            if score is None:
+                # common alternates
+                score = item.get("similarity")
+            if score is None:
+                score = item.get("sim")
+            if score is None:
+                score = item.get("cosine")
+            if score is None:
+                score = item.get("cos")
+            if score is None:
+                score = item.get("raw")
+            if score is None:
+                score = item.get("raw_score")
+            if score is None:
+                score = item.get("distance")
+            if score is None:
+                score = item.get("dist")
+
+            try:
+                score_f = float(score) if score is not None else None
+            except Exception:
+                score_f = None
+
+            return {"id": cid, "label": label, "score": score_f}
+
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            c, score = item[0], item[1]
+            cid = getattr(c, "id", None)
+            label = getattr(c, "label", None) or getattr(c, "text", None) or getattr(c, "name", None)
+            try:
+                score_f = float(score)
+            except Exception:
+                score_f = None
+            return {"id": cid, "label": label, "score": score_f}
+
+        # Fallback: item itself may be a Concept
+        c = item
+        cid = getattr(c, "id", None)
+        label = getattr(c, "label", None) or getattr(c, "text", None) or getattr(c, "name", None)
+        score = getattr(c, "score", None)
+        if score is None:
+            score = getattr(c, "similarity", None)
+        if score is None:
+            score = getattr(c, "sim", None)
+        if score is None:
+            score = getattr(c, "cosine", None)
+        if score is None:
+            score = getattr(c, "cos", None)
+        if score is None:
+            score = getattr(c, "raw", None)
+        if score is None:
+            score = getattr(c, "raw_score", None)
+        if score is None:
+            score = getattr(c, "distance", None)
+        if score is None:
+            score = getattr(c, "dist", None)
+
+        try:
+            score_f = float(score) if score is not None else None
+        except Exception:
+            score_f = None
+
+        return {"id": cid, "label": label, "score": score_f}
+
+    def infer_concepts(
+        self,
+        vec: List[float],
+        *,
+        category_id: Optional[str] = None,
+        top_k: int = 5,
+        min_score: float = -1.0,
+    ) -> List[Dict[str, Any]]:
+        r = self._get_reasoner()
+        if r is None:
+            return []
+
+        cat = category_id if category_id is not None else self._category_id
+
+        try:
+            res = r.infer_from_vector(
+                vec,
+                category_id=cat,
+                top_k_anchors=self._top_k_anchors,
+                top_k_concepts=int(top_k),
+                min_score=float(min_score),
+                query_label="maker.embed_vec",
+            )
+        except TypeError:
+            try:
+                res = r.infer_from_vector(
+                    vec,
+                    category_name=cat,
+                    top_k_anchors=self._top_k_anchors,
+                    top_k_concepts=int(top_k),
+                    min_score=float(min_score),
+                    query_label="maker.embed_vec",
+                )
+            except TypeError:
+                try:
+                    res = r.infer_from_vector(
+                        vec,
+                        category=cat,
+                        top_k_anchors=self._top_k_anchors,
+                        top_k_concepts=int(top_k),
+                        min_score=float(min_score),
+                        query_label="maker.embed_vec",
+                    )
+                except TypeError:
+                    res = r.infer_from_vector(vec)
+
+        top = None
+        for attr in ("top_concepts", "concepts", "nearest_concepts"):
+            if hasattr(res, attr):
+                top = getattr(res, attr)
+                break
+        if not top:
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for item in top:
+            if isinstance(item, dict):
+                cid = item.get("id") or item.get("concept_id")
+                label = item.get("label") or item.get("text") or item.get("name")
+                score = item.get("score")
+                if score is None:
+                    score = item.get("similarity")
+                if score is None:
+                    score = item.get("sim")
+                if score is None:
+                    score = item.get("cosine")
+                if score is None:
+                    score = item.get("cos")
+                if score is None:
+                    score = item.get("raw")
+                if score is None:
+                    score = item.get("raw_score")
+                if score is None:
+                    score = item.get("distance")
+                if score is None:
+                    score = item.get("dist")
+
+                try:
+                    score_f = float(score) if score is not None else None
+                except Exception:
+                    score_f = None
+
+                out.append({"id": cid, "label": label, "score": score_f})
+                continue
+
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                c, score = item[0], item[1]
+                cid = getattr(c, "id", None)
+                label = getattr(c, "label", None) or getattr(c, "text", None) or getattr(c, "name", None)
+                try:
+                    score_f = float(score)
+                except Exception:
+                    score_f = None
+                out.append({"id": cid, "label": label, "score": score_f})
+                continue
+
+            c = item
+            cid = getattr(c, "id", None)
+            label = getattr(c, "label", None) or getattr(c, "text", None) or getattr(c, "name", None)
+            score = getattr(c, "score", None)
+            if score is None:
+                score = getattr(c, "similarity", None)
+            if score is None:
+                score = getattr(c, "sim", None)
+            if score is None:
+                score = getattr(c, "cosine", None)
+            if score is None:
+                score = getattr(c, "cos", None)
+            if score is None:
+                score = getattr(c, "raw", None)
+            if score is None:
+                score = getattr(c, "raw_score", None)
+            if score is None:
+                score = getattr(c, "distance", None)
+            if score is None:
+                score = getattr(c, "dist", None)
+
+            try:
+                score_f = float(score) if score is not None else None
+            except Exception:
+                score_f = None
+
+            out.append({"id": cid, "label": label, "score": score_f})
+
+        return out
 
 
 # ---------------------------
 # Data models
 # ---------------------------
+
 
 @dataclass
 class ChoiceArtifact:
@@ -188,14 +455,10 @@ class ChoiceArtifact:
     round_id: int
     display_text: str
     embed_text: str
-    tags: List[str]
-
-    action_id: str
-    duration: int
-    magnitude: float
+    concepts: List[Dict[str, Any]]
     embed_vec: List[float]
-
-    effects: Dict[str, Any]
+    # optional / derived (must come after non-default fields)
+    ontology_best: Optional[Dict[str, Any]] = None
     constraints: Optional[Dict[str, Any]] = None
 
     def to_choice_payload(self) -> Dict[str, Any]:
@@ -206,16 +469,11 @@ class ChoiceArtifact:
         return {
             "choice_id": self.choice_id,
             "display_text": self.display_text,
-            "tags": list(self.tags),
+            "concepts": list(self.concepts),
+            "ontology_best": (dict(self.ontology_best) if isinstance(self.ontology_best, dict) else None),
             "constraints": self.constraints,
-            "effects": dict(self.effects),
-            "action": {
-                "action_id": self.action_id,
-                "duration": int(self.duration),
-                "magnitude": float(self.magnitude),
-                "embed_text": self.embed_text,
-                "embed_vec": list(self.embed_vec),
-            },
+            "embed_text": self.embed_text,
+            "embed_vec": list(self.embed_vec),
         }
 
     def to_choice_object(self) -> Any:
@@ -236,6 +494,21 @@ class ChoiceArtifact:
 # Text normalization
 # ---------------------------
 
+def _project_root() -> Path:
+    # maker.py: <root>/src/scenario/maker.py
+    return Path(__file__).resolve().parents[2]
+
+def resolve_model_path(model_path: str) -> str:
+    mp = str(model_path or "").strip()
+    if not mp:
+        return mp
+
+    p = Path(mp)
+    if not p.is_absolute():
+        p = _project_root() / p
+
+    return str(p)
+
 def extract_embed_text(display_text: str) -> str:
     return str(display_text).strip()
 
@@ -247,54 +520,27 @@ def extract_embed_text(display_text: str) -> str:
 class ChoiceMakerPipeline:
     def __init__(
         self,
-        dim: int = 6,
+        model_path: str,
+        dim: int = 2048,
         embedder: Optional[Embedder] = None,
-        tagger: Optional[Tagger] = None,
-        action_classifier: Optional[ActionClassifier] = None,
+        concept_inferer: Optional[ConceptInferer] = None,
+        ontology_resolver: Optional[OntologyResolver] = None,
     ):
         self.dim = int(dim)
 
         # Embedder selection:
-        # - If embedder is explicitly provided, use it.
-        # - Else, if EL_EMBED_BACKEND=llama_cpp, load llama_cpp model from EL_LLM_MODEL_PATH.
-        # - Otherwise, default to deterministic hash embedding.
+        # - If embedder is provided, use it.
+        # - Else if model_path is a non-empty string, use LlamaCppEmbedder.
+        # - Else, use DeterministicHashEmbedder.
         if embedder is not None:
             self.embedder = embedder
+        elif model_path:
+            self.embedder = LlamaCppEmbedder(model_path=model_path)
         else:
-            backend = os.getenv("EL_EMBED_BACKEND", "hash").strip().lower()
-            if backend == "llama_cpp":
-                model_path = os.getenv("EL_LLM_MODEL_PATH", "").strip()
-                if not model_path:
-                    raise ValueError(
-                        "EL_EMBED_BACKEND=llama_cpp 인 경우, 환경변수 EL_LLM_MODEL_PATH에 모델 경로를 지정해야 합니다."
-                    )
-                n_ctx = int(os.getenv("EL_LLM_N_CTX", "2048"))
-                n_threads_env = os.getenv("EL_LLM_THREADS", "").strip()
-                n_threads = int(n_threads_env) if n_threads_env else None
-                n_gpu_layers = int(os.getenv("EL_LLM_GPU_LAYERS", "0"))
-                verbose = os.getenv("EL_LLM_VERBOSE", "0").strip() in ("1", "true", "True")
+            self.embedder = DeterministicHashEmbedder()
 
-                self.embedder = LlamaCppEmbedder(
-                    model_path=model_path,
-                    n_ctx=n_ctx,
-                    n_threads=n_threads,
-                    n_gpu_layers=n_gpu_layers,
-                    verbose=verbose,
-                )
-            else:
-                self.embedder = DeterministicHashEmbedder()
-
-        self.tagger = tagger or SimpleKeywordTagger()
-        self.action_classifier = action_classifier or SimpleActionClassifier()
-
-        # MVP defaults by action_id
-        self._defaults: Dict[str, Tuple[int, float]] = {
-            "breath": (1, 0.25),
-            "reach_out": (1, 0.20),
-            "plan": (1, 0.35),
-            "vent": (2, 0.80),
-            "avoid": (2, 0.50),
-        }
+        self.ontology_resolver = ontology_resolver or DefaultOntologyResolver()
+        self.concept_inferer = concept_inferer or self.ontology_resolver
 
     def make_choice(
         self,
@@ -308,55 +554,106 @@ class ChoiceMakerPipeline:
         """Create one ChoiceArtifact from display_text.
 
         `overrides` can partially override derived fields, e.g.:
-          {"action_id": "vent", "duration": 3, "magnitude": 0.6, "tags": ["vent"]}
+          {"embed_text": "...", "embed_vec": [...], "concepts": [...], "ontology_category_id": "...", "top_k_concepts": 5, "min_score": -1.0, "constraints": {...}}
         """
         overrides = overrides or {}
 
         embed_text = str(overrides.get("embed_text") or extract_embed_text(display_text))
-        tags = list(overrides.get("tags") or self.tagger.extract_tags(embed_text))
-        action_id = str(overrides.get("action_id") or self.action_classifier.classify_action_id(embed_text, tags))
-
-        duration, magnitude = self._defaults.get(action_id, (1, 0.25))
-        duration = int(overrides.get("duration") or duration)
-        magnitude = float(overrides.get("magnitude") or magnitude)
 
         embed_vec = list(overrides.get("embed_vec") or self.embedder.embed(embed_text, self.dim))
         # Ensure correct length
         if len(embed_vec) != self.dim:
             raise ValueError(f"embed_vec dim mismatch: expected {self.dim}, got {len(embed_vec)}")
 
-        # MVP effects: keep it simple; record tags as state updates.
-        effects: Dict[str, Any] = dict(overrides.get("effects") or {"add_tags": list(tags)})
+        # Concepts (ontology inference)
+        concepts = list(overrides.get("concepts") or [])
+        if not concepts:
+            try:
+                onto_cat = overrides.get("ontology_category_id", "emotion")
+                top_k = int(overrides.get("top_k_concepts") or 5)
+                min_score = float(overrides.get("min_score") or -1.0)
+                if onto_cat is not False:
+                    try:
+                        concepts = self.concept_inferer.infer_concepts(
+                            embed_vec,
+                            category_id=(None if onto_cat is None else str(onto_cat)),
+                            top_k=top_k,
+                            min_score=min_score,
+                        )
+                    except TypeError:
+                        concepts = self.concept_inferer.infer_concepts(
+                            embed_vec,
+                            category_id=(None if onto_cat is None else str(onto_cat)),
+                            top_k=top_k,
+                        )
+            except Exception:
+                concepts = []
+        # Normalize concept dicts: ensure `score` exists (float) and preserve 0.0
+        if concepts and isinstance(concepts, list):
+            norm: List[Dict[str, Any]] = []
+            for c in concepts:
+                if not isinstance(c, dict):
+                    continue
+                s = c.get("score")
+                if s is None:
+                    s = c.get("similarity")
+                if s is None:
+                    s = c.get("sim")
+                if s is None:
+                    s = c.get("cosine")
+                if s is None:
+                    s = c.get("cos")
+                if s is None:
+                    s = c.get("raw")
+                if s is None:
+                    s = c.get("raw_score")
+                if s is None:
+                    s = c.get("distance")
+                if s is None:
+                    s = c.get("dist")
+
+                if s is not None:
+                    try:
+                        c["score"] = float(s)
+                    except Exception:
+                        pass
+                norm.append(c)
+            concepts = norm
+
+        ontology_best = None
+        try:
+            # Allow override of ontology category (or disable by setting None explicitly)
+            onto_cat = overrides.get("ontology_category_id", "emotion")
+            if onto_cat is not False:  # allow disabling via False
+                ontology_best = self.ontology_resolver.best_match(embed_vec, category_id=(None if onto_cat is None else str(onto_cat)))
+        except Exception:
+            ontology_best = None
+
         constraints = overrides.get("constraints")
 
         # Stable IDs if omitted
         if choice_id is None:
-            # deterministic id based on text
-            h = hashlib.sha1(embed_text.encode("utf-8")).hexdigest()[:6]
-            choice_id = f"r{int(round_id)}_{action_id}_{h}"
+            # deterministic id based on embed_text only
+            h = hashlib.sha1(embed_text.encode("utf-8")).hexdigest()[:8]
+            choice_id = f"r{int(round_id)}_{h}"
 
         art = ChoiceArtifact(
             choice_id=str(choice_id),
             round_id=int(round_id),
             display_text=str(display_text),
             embed_text=str(embed_text),
-            tags=list(tags),
-            action_id=str(action_id),
-            duration=int(duration),
-            magnitude=float(magnitude),
+            concepts=list(concepts),
             embed_vec=embed_vec,
-            effects=effects,
+            ontology_best=ontology_best,
             constraints=constraints if isinstance(constraints, dict) else None,
         )
 
         if debug:
             print("[MAKER] display_text=", display_text)
             print("[MAKER] embed_text=", embed_text)
-            print("[MAKER] tags=", tags)
-            print("[MAKER] action_id=", action_id)
-            print("[MAKER] duration/magnitude=", duration, magnitude)
+            print("[MAKER] concepts=", [{"id": c.get("id"), "label": c.get("label"), "score": c.get("score")} if isinstance(c, dict) else c for c in concepts])
+            print("[MAKER] ontology_best=", ontology_best)
             print("[MAKER] embed_vec=", [round(x, 4) for x in embed_vec])
-            print("[MAKER] effects=", effects)
 
         return art
 
@@ -366,7 +663,21 @@ class ChoiceMakerPipeline:
 # ---------------------------
 
 if __name__ == "__main__":
-    pipe = ChoiceMakerPipeline(dim=6)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="ChoiceMakerPipeline quick test")
+    parser.add_argument(
+        "--model-path",
+        default=str(_project_root() / "models" / "Llama-3.2-1B-Instruct-Q4_K_M.gguf"),
+        help="Path to a llama.cpp (GGUF) model for embeddings.",
+    )
+    parser.add_argument("--dim", type=int, default=2048, help="Embedding dimension")
+    args = parser.parse_args()
+
+    # Fail-fast: always try to load the requested llama.cpp model path.
+    # If the file path is wrong, llama_cpp will raise an error (that's intended).
+    pipe = ChoiceMakerPipeline(model_path=args.model_path, dim=args.dim)
+    print(f"[maker.py] Using llama.cpp model: {args.model_path}")
 
     demo = "I'm here with you. Let's take a breath together. (나는 네 곁에 있어. 같이 숨 쉬자.)"
     art = pipe.make_choice(
