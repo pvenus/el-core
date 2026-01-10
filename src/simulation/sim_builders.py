@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import numpy as np
 
 from .dto.vector_space import AxisSpec, VectorSpaceSpec
-from .dto.agent import AgentSpec, AgentState
+from .dto.agent import AgentSpec
 from .dto.impact import Impact
 from .dto.step_io import StepInput
-from .sim_agent import SimAgent
-from .sim_dynamics import SimDynamics
-from .sim_runner import StepRunner
-from .sim_manager import SimulationManager
+from .sim_protocols import AgentSpecSource
 
 
 @dataclass
@@ -21,7 +19,6 @@ class DemoSpaceBuilder:
     def build(self) -> VectorSpaceSpec:
         rng = np.random.default_rng(self.seed)
         axes: list[AxisSpec] = []
-
         for i in range(self.dim):
             axes.append(
                 AxisSpec(
@@ -30,64 +27,49 @@ class DemoSpaceBuilder:
                     proto_vec=rng.normal(size=(self.dim,)).astype(float),
                 )
             )
-
         return VectorSpaceSpec(dim=self.dim, axes=axes)
 
 
 @dataclass
-class DemoAgentBuilder:
+class DemoAgentSpecSource(AgentSpecSource):
+    """
+    - AgentSpecSource 구현체
+    """
     n_agents: int = 2
     seed: int = 123
 
-    def build(self, space: VectorSpaceSpec) -> list[SimAgent]:
+    def build_agent_specs(self, space: VectorSpaceSpec) -> list[AgentSpec]:
         rng = np.random.default_rng(self.seed)
-        agents: list[SimAgent] = []
-
+        specs: list[AgentSpec] = []
         for i in range(self.n_agents):
-            base = rng.normal(size=(space.dim,))
-            comfort = rng.normal(size=(space.dim,))
-
-            spec = AgentSpec(
-                agent_id=f"agent_{i+1}",
-                name=f"Agent {i+1}",
-                base_vec=base,
-                comfort_vec=comfort,
-                vars_base={"hp": 100.0},
+            base = rng.normal(size=(space.dim,)).astype(float)
+            comfort = rng.normal(size=(space.dim,)).astype(float)
+            specs.append(
+                AgentSpec(
+                    agent_id=f"agent_{i+1}",
+                    name=f"Agent {i+1}",
+                    base_vec=base,
+                    comfort_vec=comfort,
+                    vars={"hp": 100.0},
+                    meta={"demo": True},
+                )
             )
-
-            state = AgentState(
-                current_vec=base.copy(),
-                vars=dict(spec.vars_base),
-                step_idx=0,
-            )
-
-            agents.append(SimAgent(space=space, spec=spec, state=state))
-
-        return agents
-
-
-def build_demo_manager(dim: int = 12, n_agents: int = 2, seed: int = 42) -> SimulationManager:
-    space = DemoSpaceBuilder(dim=dim, seed=seed).build()
-    agents = DemoAgentBuilder(n_agents=n_agents, seed=seed + 1).build(space)
-
-    dynamics = SimDynamics(space=space)
-    runner = StepRunner(dynamics=dynamics)
-
-    return SimulationManager(space_spec=space, agents=agents, runner=runner)
+        return specs
 
 
 def build_demo_step_input(agent_ids: list[str], dim: int, seed: int = 7) -> StepInput:
     rng = np.random.default_rng(seed)
+    impacts_by_agent: dict[str, list[Impact]] = {}
 
-    impacts: dict[str, list[Impact]] = {}
     for aid in agent_ids:
-        impacts[aid] = [
+        impacts_by_agent[aid] = [
             Impact(
-                direction=rng.normal(size=(dim,)),
+                direction=rng.normal(size=(dim,)).astype(float),
                 magnitude=float(rng.uniform(0.1, 1.0)),
                 duration=1,
                 delta_vars={"mood": float(rng.uniform(-0.5, 0.5))},
+                profile={"src": "demo"},
             )
         ]
 
-    return StepInput(impacts_by_agent=impacts, metadata={"demo": True})
+    return StepInput(impacts_by_agent=impacts_by_agent, metadata={"demo": True})
