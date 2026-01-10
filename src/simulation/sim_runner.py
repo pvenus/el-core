@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .dto.step import StepInput, StepResult, AgentStepResult
-from .sim_agent import SimAgent
-from .sim_dynamics import SimDynamics
+from src.simulation.dto.step_io import StepInput, StepResult, AgentStepResult
+from src.simulation.sim_agent import SimAgent
+from src.simulation.sim_dynamics import SimDynamics
+from src.ontology.pipeline import pipeline_quick_test
 
 
 @dataclass
@@ -18,11 +19,18 @@ class StepRunner:
     def run(self, agents: dict[str, SimAgent], step_input: StepInput, step_idx: int) -> StepResult:
         results: list[AgentStepResult] = []
 
+        picked = pipeline_quick_test()
+        for agent_id, agent in agents.items():
+            print(f"inject impact {agent_id} {picked.impact}")
+            impacts = []
+            impacts.append(picked.impact)
+            agent.inject_impacts(impacts)
+
         # 1) impacts 주입
-        for agent_id, imps in step_input.impacts_by_agent.items():
-            if agent_id not in agents:
-                raise KeyError(f"Unknown agent_id in StepInput: {agent_id}")
-            agents[agent_id].inject_impacts(imps)
+        #for agent_id, imps in step_input.impacts_by_agent.items():
+        #    if agent_id not in agents:
+        #        raise KeyError(f"Unknown agent_id in StepInput: {agent_id}")
+        #    agents[agent_id].inject_impacts(imps)
 
         # 2) 각 agent 업데이트
         for agent_id, agent in agents.items():

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict
 
 import numpy as np
 
@@ -37,3 +37,12 @@ class Impact:
     @property
     def expired(self) -> bool:
         return self.duration <= 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "direction": self.direction.astype(np.float32).tolist(),
+            "magnitude": float(self.magnitude),
+            "duration": int(self.duration),
+            "delta_vars": dict(self.delta_vars),
+            "profile": dict(self.profile),
+        }

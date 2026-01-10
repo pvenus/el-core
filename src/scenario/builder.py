@@ -1,7 +1,8 @@
-from .dto.scenario import Scenario
-from .dto.round_spec import RoundSpec
-from .dto.choice import Choice
-from .manager import ScenarioManager
+from src.scenario.dto.scenario import Scenario
+from src.scenario.dto.round_spec import RoundSpec
+from src.scenario.dto.choice import Choice
+from src.scenario.manager import ScenarioManager
+from src.scenario.maker import ChoiceMakerPipeline
 
 def build_demo_scenario(dim: int = 6) -> ScenarioManager:
     s = Scenario(scenario_id="demo", title="Demo Scenario", dim=dim)
@@ -151,4 +152,38 @@ def build_demo_scenario(dim: int = 6) -> ScenarioManager:
     )
     s.add_round(r3)
 
+    return ScenarioManager(s)
+
+def build_simple_demo_scenario() -> ScenarioManager:
+    """A tiny demo scenario built via ChoiceMakerPipeline.
+
+    NOTE: This intentionally fail-fast loads the provided GGUF model path.
+    """
+    s = Scenario(scenario_id="simple_demo", title="Simple Demo")
+
+    # Fail-fast: always try to load the requested llama.cpp model path.
+    pipe = ChoiceMakerPipeline(model_path="models/Llama-3.2-1B-Instruct-Q4_K_M.gguf")
+
+    r1 = RoundSpec(round_id=1)
+
+    demo_1 = "I'm here with you. Let's take a breath together. (나는 네 곁에 있어. 같이 숨 쉬자.)"
+    art_1 = pipe.make_choice(
+        demo_1,
+        round_id=1,
+        overrides={"embed_text": "I'm here with you. Let's take a breath together."},
+        debug=False,
+    )
+
+    demo_2 = "Tell me what happened—start anywhere. (무슨 일이 있었는지 말해줘. 어디서부터든 좋아.)"
+    art_2 = pipe.make_choice(
+        demo_2,
+        round_id=1,
+        overrides={"embed_text": "Tell me what happened. Start anywhere."},
+        debug=False,
+    )
+
+    r1.add_choice(art_1)
+    r1.add_choice(art_2)
+
+    s.add_round(r1)
     return ScenarioManager(s)

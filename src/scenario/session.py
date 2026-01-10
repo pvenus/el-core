@@ -1,5 +1,4 @@
 from .dto.session_state import SessionState
-from .dto.choice import Choice
 from .dto.selection_ctx import SelectionContext
 from .manager import ScenarioManager
 from typing import Any, Dict, List, Optional
@@ -28,8 +27,38 @@ class ScenarioSession:
             history=[],
         )
 
-    def _apply_effects(self, choice: Choice) -> None:
-        eff = choice.effects or {}
+    def _choice_payload(self, choice: Any) -> Dict[str, Any]:
+        """Return a normalized dict payload for either Choice or ChoiceArtifact."""
+        if hasattr(choice, "to_choice_payload") and callable(getattr(choice, "to_choice_payload")):
+            try:
+                payload = choice.to_choice_payload()
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                # Fall through to attribute-based extraction
+                pass
+
+        # Attribute-based fallback
+        payload: Dict[str, Any] = {
+            "choice_id": getattr(choice, "choice_id", None),
+            "round_id": getattr(choice, "round_id", None),
+            "display_text": getattr(choice, "display_text", None),
+            "embed_text": getattr(choice, "embed_text", None),
+            "embed_vec": getattr(choice, "embed_vec", None),
+            "concepts": getattr(choice, "concepts", None),
+            "ontology_best": getattr(choice, "ontology_best", None),
+            "impact": getattr(choice, "impact", None),
+            # legacy / optional fields (may not exist for ChoiceArtifact)
+            "tags": getattr(choice, "tags", None),
+            "constraints": getattr(choice, "constraints", None),
+            "effects": getattr(choice, "effects", None),
+            "action": getattr(choice, "action", None),
+        }
+        return payload
+
+    def _apply_effects(self, choice: Any) -> None:
+        payload = self._choice_payload(choice)
+        eff = payload.get("effects") or {}
 
         # Vector update
         delta = eff.get("delta_vec")
@@ -77,7 +106,7 @@ class ScenarioSession:
 
         r = self.manager.scenario.get_round(self.state.round_id)
 
-        chosen: Optional[Choice] = None
+        chosen: Optional[Any] = None
         if choice_id is not None:
             for c in r.choices:
                 if c.choice_id == choice_id:
@@ -89,13 +118,43 @@ class ScenarioSession:
         # Apply effects so conversation continues with updated state
         self._apply_effects(chosen)
 
+        chosen_payload = self._choice_payload(chosen)
+        # Normalize fields for both Choice and ChoiceArtifact
+        concepts = chosen_payload.get("concepts")
+        if not isinstance(concepts, list):
+            concepts = []
+
+        # Derive tags from concepts when explicit tags are missing
+        tags = chosen_payload.get("tags")
+        if not isinstance(tags, list):
+            derived = []
+            for it in concepts:
+                if not isinstance(it, dict):
+                    continue
+                cid = it.get("id") or it.get("label")
+                if cid:
+                    derived.append(str(cid))
+            tags = derived
+
+        impact = chosen_payload.get("impact")
+        if hasattr(impact, "to_dict") and callable(getattr(impact, "to_dict")):
+            try:
+                impact = impact.to_dict()
+            except Exception:
+                pass
+
         record = {
             "round_id": int(self.state.round_id),
-            "choice_id": chosen.choice_id,
-            "display_text": chosen.display_text,
-            "tags": list(chosen.tags),
-            "effects": dict(chosen.effects),
-            "action": dict(chosen.action),
+            "choice_id": str(chosen_payload.get("choice_id") or ""),
+            "display_text": str(chosen_payload.get("display_text") or ""),
+            "embed_text": (chosen_payload.get("embed_text") if isinstance(chosen_payload.get("embed_text"), str) else ""),
+            "concepts": concepts,
+            "ontology_best": (chosen_payload.get("ontology_best") if isinstance(chosen_payload.get("ontology_best"), dict) else None),
+            "impact": (impact if isinstance(impact, dict) else None),
+            "tags": list(tags or []),
+            # legacy fields kept for compatibility (ChoiceArtifact will typically have none)
+            "effects": dict(chosen_payload.get("effects") or {}),
+            "action": dict(chosen_payload.get("action") or {}),
             "turn": int(self.state.turn),
             "current_vec": list(self.state.current_vec),
             "memory_tags": list(self.state.memory_tags),

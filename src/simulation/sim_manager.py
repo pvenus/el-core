@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .dto.vector_space import VectorSpaceSpec
-from .dto.step_io import StepInput, StepResult
-from .sim_agent import SimAgent
-from .sim_runner import StepRunner
-from .sim_dynamics import SimDynamics
+from src.simulation.dto.vector_space import VectorSpaceSpec
+from src.simulation.dto.step_io import StepInput, StepResult
+from src.simulation.sim_agent import SimAgent
+from src.simulation.sim_runner import StepRunner
+from src.simulation.sim_dynamics import SimDynamics
 
 
 @dataclass
@@ -41,9 +41,9 @@ class SimulationManager:
 
 
 def main() -> None:
-    from .sim_builders import build_demo_manager, build_demo_step_input
+    from src.simulation.sim_builders import build_demo_manager, build_demo_step_input
 
-    mgr = build_demo_manager(dim=8, n_agents=2)
+    mgr = build_demo_manager(dim=7, n_agents=2)
     agent_ids = [a.agent_id for a in mgr.agents]
 
     step_input = build_demo_step_input(agent_ids, dim=mgr.space_spec.dim)

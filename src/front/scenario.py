@@ -35,7 +35,7 @@ def _load_items(path: str) -> List[Dict[str, Any]]:
             continue
 
         # New format: full choice payload already stored
-        if ("choice_id" in it) or ("action" in it) or ("action_id" in it):
+        if ("choice_id" in it) or ("action" in it):
             display_text = str(it.get("display_text", ""))
             embed_text = str(it.get("action", {}).get("embed_text", it.get("embed_text", "")))
             items.append(
@@ -44,7 +44,6 @@ def _load_items(path: str) -> List[Dict[str, Any]]:
                     "embed_text": embed_text,
                     "enabled": bool(it.get("enabled", True)),
                     "artifact": it,
-                    "dim": int(it.get("dim", 6) or 6),
                     "round_id": int(it.get("round_id", 1) or 1),
                 }
             )
@@ -57,7 +56,6 @@ def _load_items(path: str) -> List[Dict[str, Any]]:
                 "embed_text": str(it.get("embed_text", "")),
                 "enabled": bool(it.get("enabled", True)),
                 "artifact": None,
-                "dim": int(it.get("dim", 6) or 6),
                 "round_id": int(it.get("round_id", 1) or 1),
             }
         )
@@ -85,7 +83,6 @@ def _save_items(path: str, items: List[Dict[str, Any]]) -> None:
                 out["action"].setdefault("embed_text", str(it.get("embed_text", "")))
             else:
                 out.setdefault("embed_text", str(it.get("embed_text", "")))
-            out["dim"] = int(it.get("dim", out.get("dim", 6)) or 6)
             out["round_id"] = int(it.get("round_id", out.get("round_id", 1)) or 1)
             normalized.append(out)
         else:
@@ -95,7 +92,6 @@ def _save_items(path: str, items: List[Dict[str, Any]]) -> None:
                     "enabled": enabled,
                     "display_text": str(it.get("display_text", "")),
                     "embed_text": str(it.get("embed_text", "")),
-                    "dim": int(it.get("dim", 6) or 6),
                     "round_id": int(it.get("round_id", 1) or 1),
                 }
             )
@@ -127,11 +123,11 @@ def render_scenario_lab():
     import contextlib
     import traceback
 
-    def _get_pipe(dim: int) -> ChoiceMakerPipeline:
+    def _get_pipe() -> ChoiceMakerPipeline:
         cache = st.session_state.setdefault("scenario_pipe_cache", {})
-        key = f"dim:{int(dim)}"
+        key = f"dim"
         if key not in cache:
-            cache[key] = ChoiceMakerPipeline(dim=int(dim))
+            cache[key] = ChoiceMakerPipeline(model_path="models/Llama-3.2-1B-Instruct-Q4_K_M.gguf", dim=2048)
         return cache[key]
 
     # -----------------------------
@@ -174,11 +170,62 @@ def render_scenario_lab():
     # -----------------------------
     st.subheader("2) 리스트 관리 (표 기반: 출력 / 추가 / 삭제 / 사용 여부)")
 
-    items: List[Dict[str, Any]] = st.session_state["scenario_items"]
+    import json
+
+    def _safe_json(v, max_len: int = 500) -> str:
+        """Serialize nested/list values into a compact, readable string for table display."""
+        try:
+            s = json.dumps(v, ensure_ascii=False)
+        except TypeError:
+            s = str(v)
+        if len(s) > max_len:
+            s = s[: max_len - 3] + "..."
+        return s
+
+    def _flatten_choice_item(item: dict) -> dict:
+        # top-level
+        out = {
+            "choice_id": item.get("choice_id"),
+            "display_text": item.get("display_text"),
+            "enabled": item.get("enabled"),
+            "round_id": item.get("round_id"),
+            "embed_text": item.get("embed_text"),
+        }
+
+        # ontology best
+        ob = item.get("ontology_best") or {}
+        out["best_id"] = ob.get("id")
+        out["best_score"] = ob.get("score")
+
+        # impact
+        impact = item.get("impact") or {}
+        out["impact_mag"] = impact.get("magnitude")
+        out["impact_dur"] = impact.get("duration")
+        out["delta_vars"] = _safe_json(impact.get("delta_vars") or {})
+        out["direction"] = _safe_json(impact.get("direction") or [])
+
+        # concepts: keep as readable compact string (top 10 already)
+        concepts = item.get("concepts") or []
+        out["concepts"] = ", ".join(
+            [f"{c.get('id')}({(c.get('score') or 0):.3f})" for c in concepts if isinstance(c, dict)]
+        )
+
+        # embed vec can be huge: show length + preview
+        ev = item.get("embed_vec") or []
+        if isinstance(ev, list):
+            out["embed_vec_len"] = len(ev)
+            out["embed_vec_head"] = _safe_json(ev[:12])
+        else:
+            out["embed_vec_len"] = None
+            out["embed_vec_head"] = _safe_json(ev)
+
+        return out
+
+    items: List[dict] = st.session_state["scenario_items"]
 
     if not items:
         st.info("로드된 항목이 없습니다. Add로 추가하거나 Load 후 사용하세요.")
-        items.append({"display_text": "", "embed_text": "", "enabled": True, "dim": 6, "round_id": 1, "artifact": None})
+        items.append({"display_text": "", "embed_text": "", "enabled": True, "round_id": 1, "artifact": None})
 
     # Normalize schema
     for it in items:
@@ -186,116 +233,49 @@ def render_scenario_lab():
         it["embed_text"] = str(it.get("embed_text", ""))
         it["enabled"] = bool(it.get("enabled", True))
         it["artifact"] = it.get("artifact") if isinstance(it.get("artifact"), dict) else None
-        it["dim"] = int(it.get("dim", 6) or 6)
         it["round_id"] = int(it.get("round_id", 1) or 1)
 
-    rows_for_editor: List[Dict[str, Any]] = []
+    # Build flattened rows for display
+    # If artifact exists, flatten it; otherwise flatten the item itself
+    rows = []
     for it in items:
-        art = it.get("artifact") if isinstance(it, dict) else None
-        choice_id = ""
-        action_id = ""
-        tags_preview = ""
+        art = it.get("artifact")
         if isinstance(art, dict):
-            choice_id = str(art.get("choice_id", ""))
-            action_id = str(art.get("action", {}).get("action_id", art.get("action_id", "")))
-            tags = art.get("tags", [])
-            if isinstance(tags, list):
-                tags_preview = ",".join([str(x) for x in tags])
+            row = _flatten_choice_item(art)
+            # fallback for display_text/embed_text/enabled/round_id if missing
+            for k in ("display_text", "embed_text", "enabled", "round_id"):
+                if row.get(k) is None:
+                    row[k] = it.get(k)
+            rows.append(row)
+        else:
+            rows.append(_flatten_choice_item(it))
 
-        rows_for_editor.append(
-            {
-                "enabled": it["enabled"],
-                "display_text": it["display_text"],
-                "embed_text": it["embed_text"],
-                "dim": int(it.get("dim", 6) or 6),
-                "round_id": int(it.get("round_id", 1) or 1),
-                "choice_id": choice_id,
-                "action_id": action_id,
-                "tags": tags_preview,
-            }
-        )
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        preferred_cols = [
+            "choice_id",
+            "display_text",
+            "enabled",
+            "round_id",
+            "best_id",
+            "best_score",
+            "impact_mag",
+            "impact_dur",
+            "delta_vars",
+            "concepts",
+            "direction",
+            "embed_text",
+            "embed_vec_len",
+            "embed_vec_head",
+        ]
+        cols = [c for c in preferred_cols if c in df.columns] + [c for c in df.columns if c not in preferred_cols]
+        df = df[cols]
 
-    edited = st.data_editor(
-        rows_for_editor,
-        key="scenario_table",
-        num_rows="fixed",
-        width="stretch",
-        column_config={
-            "enabled": st.column_config.CheckboxColumn("enabled"),
-            "display_text": st.column_config.TextColumn("display_text", width="large"),
-            "embed_text": st.column_config.TextColumn("embed_text", width="large"),
-            "dim": st.column_config.NumberColumn("dim", min_value=2, step=1, width="small"),
-            "round_id": st.column_config.NumberColumn("round_id", min_value=1, step=1, width="small"),
-            "choice_id": st.column_config.TextColumn("choice_id", disabled=True),
-            "action_id": st.column_config.TextColumn("action_id", disabled=True),
-            "tags": st.column_config.TextColumn("tags", disabled=True, width="medium"),
-        },
-        hide_index=False,
-    )
+    st.dataframe(df, width="stretch")
 
-    # Persist edits (auto-save + reload)
-    if isinstance(edited, list) and len(edited) == len(items):
-        changed = False
-        for i in range(len(items)):
-            new_enabled = bool(edited[i].get("enabled", True))
-            new_display = str(edited[i].get("display_text", ""))
-            new_embed = str(edited[i].get("embed_text", ""))
-            new_dim = int(edited[i].get("dim", items[i].get("dim", 6)) or 6)
-            new_round = int(edited[i].get("round_id", items[i].get("round_id", 1)) or 1)
-
-            if (
-                (new_enabled != items[i].get("enabled"))
-                or (new_display != items[i].get("display_text"))
-                or (new_embed != items[i].get("embed_text"))
-                or (new_dim != int(items[i].get("dim", 6) or 6))
-                or (new_round != int(items[i].get("round_id", 1) or 1))
-            ):
-                changed = True
-
-            # If text or dim changed, invalidate previously built artifact
-            if (
-                (new_display != items[i].get("display_text"))
-                or (new_embed != items[i].get("embed_text"))
-                or (new_dim != int(items[i].get("dim", 6) or 6))
-            ):
-                items[i]["artifact"] = None
-
-            items[i]["enabled"] = new_enabled
-            items[i]["display_text"] = new_display
-            items[i]["embed_text"] = new_embed
-            items[i]["dim"] = int(new_dim)
-            items[i]["round_id"] = int(new_round)
-
-        st.session_state["scenario_items"] = items
-
-        if changed:
-            # Auto-run make_choice for enabled rows whose artifact is missing
-            for j in range(len(items)):
-                row = items[j]
-                if not bool(row.get("enabled", True)):
-                    continue
-                if not str(row.get("display_text", "")).strip():
-                    continue
-                if row.get("artifact") is not None:
-                    continue
-                try:
-                    pipe = _get_pipe(int(row.get("dim", 6) or 6))
-                    art = pipe.make_choice(
-                        str(row.get("display_text", "")),
-                        round_id=int(row.get("round_id", 1) or 1),
-                        overrides={"embed_text": str(row.get("embed_text", ""))} if str(row.get("embed_text", "")).strip() else None,
-                        debug=False,
-                    )
-                    row["artifact"] = art.to_choice_payload()
-                    row["embed_text"] = str(art.embed_text)
-                except Exception:
-                    pass
-
-            st.session_state["scenario_items"] = items
-            _persist_and_reload(store_path)
-            # Keep selection stable
-            st.session_state["scenario_selected_idx_pending"] = int(st.session_state.get("scenario_selected_idx", 0))
-            st.rerun()
+    # NOTE: Table is rendered with st.dataframe for read-only stability.
+    # Inline edit persistence via `edited` (from st.data_editor) is intentionally disabled.
 
     # Explicit row selector
     # Apply pending selected index (must happen before the widget with key `scenario_selected_idx` is instantiated)
@@ -342,10 +322,8 @@ def render_scenario_lab():
             new_display = st.text_area("display_text", value="", height=120)
             new_embed = st.text_area("embed_text", value="", height=120)
 
-            a1, a2 = st.columns([1, 1])
-            with a1:
-                new_dim = st.number_input("dim", min_value=2, value=6, step=1)
-            with a2:
+            col_round, _col_spacer = st.columns([1, 1])
+            with col_round:
                 new_round = st.number_input("round_id", min_value=1, value=1, step=1)
 
             d_ok, d_cancel = st.columns([1, 1])
@@ -361,7 +339,7 @@ def render_scenario_lab():
             if ok:
                 items = st.session_state.get("scenario_items", [])
                 try:
-                    pipe = _get_pipe(int(new_dim))
+                    pipe = _get_pipe()
                     art = pipe.make_choice(
                         str(new_display),
                         round_id=int(new_round),
@@ -374,7 +352,6 @@ def render_scenario_lab():
                             "display_text": str(new_display),
                             "embed_text": str(art.embed_text),
                             "enabled": True,
-                            "dim": int(new_dim),
                             "round_id": int(new_round),
                             "artifact": payload,
                         }
@@ -386,7 +363,6 @@ def render_scenario_lab():
                             "display_text": str(new_display),
                             "embed_text": str(new_embed),
                             "enabled": True,
-                            "dim": int(new_dim),
                             "round_id": int(new_round),
                             "artifact": None,
                         }
@@ -431,7 +407,7 @@ def render_scenario_lab():
 
                 # Ensure at least one row exists
                 if not items:
-                    items.append({"display_text": "", "embed_text": "", "enabled": True, "dim": 6, "round_id": 1, "artifact": None})
+                    items.append({"display_text": "", "embed_text": "", "enabled": True, "round_id": 1, "artifact": None})
                     next_idx = 0
                 else:
                     next_idx = max(0, min(idx, len(items) - 1))
