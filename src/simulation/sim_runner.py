@@ -1,71 +1,65 @@
-# sim_engine/sim_runner.py
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
 
+from .dto.step import StepInput, StepResult, AgentStepResult
 from .sim_agent import SimAgent
-from .sim_dynamics import apply as dynamics_apply
-from .dto.impact import Impact
-from .dto.turn import TurnInput, TurnResult
+from .sim_dynamics import SimDynamics
 
-from .sim_types import Meta
 
-class SimRunner:
+@dataclass
+class StepRunner:
     """
-    runner = 오케스트레이션
-    - turn 관리
-    - new impacts 추가
-    - dynamics 호출
-    - TurnResult 조립
-    - agent.state 업데이트
-    - impacts tick/expire 처리(스택 owner는 agent라 agent가 수행)
+    '한 스텝' 실행만 담당.
+    - 흐름(히스토리/step_idx 증가 등)은 Manager가 담당.
     """
+    dynamics: SimDynamics
 
-    def __init__(self, agent: SimAgent):
-        self.agent = agent
+    def run(self, agents: dict[str, SimAgent], step_input: StepInput, step_idx: int) -> StepResult:
+        results: list[AgentStepResult] = []
 
-    def step_with_input(self, turn_input: TurnInput) -> TurnResult:
-        return self.step(impacts_new=turn_input.impacts, meta=turn_input.meta)
+        # 1) impacts 주입
+        for agent_id, imps in step_input.impacts_by_agent.items():
+            if agent_id not in agents:
+                raise KeyError(f"Unknown agent_id in StepInput: {agent_id}")
+            agents[agent_id].inject_impacts(imps)
 
-    def step(self, impacts_new: Optional[List[Impact]] = None, meta: Optional[Meta] = None) -> TurnResult:
-        meta = dict(meta or {})
+        # 2) 각 agent 업데이트
+        for agent_id, agent in agents.items():
+            injected = step_input.impacts_by_agent.get(agent_id, [])
 
-        before = self.agent.state
-        turn = before.turn
+            before_vec = agent.state.current_vec.copy()
+            before_vars = dict(agent.state.vars) if agent.state.vars is not None else {}
 
-        impacts_new = list(impacts_new or [])
-        if impacts_new:
-            self.agent.add_impacts(impacts_new)
+            # 전이
+            self.dynamics.apply(agent)
 
-        impacts_applied = self.agent.snapshot_active_impacts()
+            # step index 반영(상태 SSOT)
+            agent.state.step_idx = step_idx
 
-        transition = dynamics_apply(self.agent.spec, before, impacts_applied)
+            # 만료 처리(정책: 스텝 끝에서 tick)
+            expired = agent.tick_and_expire_impacts()
 
-        # turn 증가는 runner에서 책임
-        after = replace(transition.next_state, turn=turn + 1)
+            after_vec = agent.state.current_vec.copy()
+            after_vars = dict(agent.state.vars) if agent.state.vars is not None else {}
 
-        # agent 업데이트
-        self.agent.set_state(after)
+            metrics = {
+                "distance_to_comfort": agent.distance_to_comfort(),
+                "in_comfort": agent.in_comfort(),
+            }
 
-        # stack tick/expire
-        self.agent.tick_impacts()
-        impacts_remaining = self.agent.snapshot_active_impacts()
+            results.append(
+                AgentStepResult(
+                    agent_id=agent_id,
+                    before_vec=before_vec,
+                    after_vec=after_vec,
+                    before_vars=before_vars,
+                    after_vars=after_vars,
+                    injected_impacts=list(injected),
+                    expired_impacts=list(expired),
+                    active_impacts_after=list(agent.active_impacts),
+                    metrics=metrics,
+                )
+            )
 
-        dist = self.agent.distance_to_comfort(after)
-        in_c = self.agent.in_comfort(after)
-
-        return TurnResult(
-            turn=turn,
-            before=before,
-            after=after,
-            impacts_new=impacts_new,
-            impacts_applied=impacts_applied,
-            impacts_remaining=impacts_remaining,
-            applied_delta_vec=transition.sum_delta_vec,
-            applied_delta_vars=dict(transition.sum_delta_vars),
-            distance_to_comfort=float(dist),
-            in_comfort=bool(in_c),
-            metrics=dict(transition.metrics),
-            meta=meta,
-        )
+        return StepResult(step_idx=step_idx, per_agent=results, metadata=dict(step_input.metadata))

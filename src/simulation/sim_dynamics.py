@@ -1,69 +1,50 @@
-# sim_engine/sim_dynamics.py
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import Dict, List, Tuple
+from dataclasses import dataclass, field
+from typing import Callable
 
-from .sim_vector import add
-from .dto.agent import AgentSpec, AgentState
+import numpy as np
+
 from .dto.impact import Impact
-from .dto.turn import Transition
+from .dto.vector_space import VectorSpaceSpec
+from .sim_agent import SimAgent
 
-from .sim_types import Vector, Vars
 
-def _sum_impacts(spec: AgentSpec, impacts: List[Impact]) -> Tuple[Vector, Vars]:
+@dataclass
+class SimDynamics:
     """
-    활성 impacts를 합산하여 (sum_delta_vec, sum_delta_vars)를 만든다.
-    - clamp/normalize/damping/noise 등 "impact 외 규칙"은 적용하지 않음 (형 요구)
+    Impact 기반 전이만 적용.
+    - 노이즈/클램프/랜덤/감쇠 등 Impact 외 공식은 아직 적용하지 않음.
+    - 대신 확장 훅 자리는 마련해 둠.
     """
-    dim = spec.dim
-    sum_vec = [0.0 for _ in range(dim)]
-    sum_vars: Vars = {}
+    space: VectorSpaceSpec
+    pre_update_hooks: list[Callable[[SimAgent], None]] = field(default_factory=list)
+    post_update_hooks: list[Callable[[SimAgent], None]] = field(default_factory=list)
 
-    for imp in impacts:
-        imp.validate(dim)
+    def apply(self, agent: SimAgent) -> None:
+        # hooks (자리만)
+        for h in self.pre_update_hooks:
+            h(agent)
 
-        dv = imp.delta_vec()   # unit(direction) * magnitude
-        sum_vec = add(sum_vec, dv)
+        # validate
+        self.space.validate_vec(agent.state.current_vec, "agent.state.current_vec")
 
-        if imp.delta_vars:
-            for k, v in imp.delta_vars.items():
-                sum_vars[k] = float(sum_vars.get(k, 0.0)) + float(v)
+        # 1) 벡터 합산
+        delta = self.space.zeros()
+        for imp in agent.active_impacts:
+            self.space.validate_vec(imp.direction, "impact.direction")
+            delta = delta + imp.delta_vec()
 
-    return sum_vec, sum_vars
+        agent.state.current_vec = agent.state.current_vec + delta
 
+        # 2) vars 합산
+        if agent.active_impacts:
+            if agent.state.vars is None:
+                agent.state.vars = {}
+            for imp in agent.active_impacts:
+                for k, dv in imp.delta_vars.items():
+                    agent.state.vars[k] = float(agent.state.vars.get(k, 0.0) + float(dv))
 
-def apply(spec: AgentSpec, prev: AgentState, impacts: List[Impact]) -> Transition:
-    """
-    dynamics = physics (순수 전이)
-
-    - runner가 관리하는 impacts(활성 스택 스냅샷)를 받아
-    - delta 합산 -> state 전이 적용
-    - Transition 반환
-    """
-    prev.validate(spec)
-
-    delta_vec, delta_vars = _sum_impacts(spec, impacts)
-
-    if len(prev.current_vec) != len(delta_vec):
-        raise ValueError(f"delta_vec dim mismatch: {len(prev.current_vec)} != {len(delta_vec)}")
-
-    next_vec = add(prev.current_vec, delta_vec)
-
-    next_vars = dict(prev.vars)
-    for k, v in delta_vars.items():
-        next_vars[k] = float(next_vars.get(k, 0.0)) + float(v)
-
-    next_state = replace(prev, current_vec=next_vec, vars=next_vars)
-
-    # metrics는 "순수 관측치"만 (원하면 이후 확장)
-    metrics = {
-        "n_impacts": len(impacts),
-    }
-
-    return Transition(
-        next_state=next_state,
-        sum_delta_vec=delta_vec,
-        sum_delta_vars=delta_vars,
-        metrics=metrics,
-    )
+        # hooks (자리만)
+        for h in self.post_update_hooks:
+            h(agent)
