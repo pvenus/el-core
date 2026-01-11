@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List
-from .round_spec import RoundSpec
+from src.scenario.dto.round_spec import RoundSpec
 
 @dataclass
 class Scenario:
@@ -8,7 +8,7 @@ class Scenario:
 
     scenario_id: str
     title: str = ""
-    dim: int = 6
+    dim: int = 7
     rounds: List[RoundSpec] = field(default_factory=list)
 
     def get_round(self, round_id: int) -> RoundSpec:

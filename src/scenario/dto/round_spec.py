@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from .choice import Choice
+from src.scenario.dto.choice_artifact import ChoiceArtifact
 from typing import List
 
 @dataclass
@@ -7,7 +7,7 @@ class RoundSpec:
     """A single round containing multiple agent reply choices."""
 
     round_id: int
-    choices: List[Choice] = field(default_factory=list)
+    choices: List[ChoiceArtifact] = field(default_factory=list)
 
-    def add_choice(self, choice: Choice) -> None:
+    def add_choice(self, choice: ChoiceArtifact) -> None:
         self.choices.append(choice)
