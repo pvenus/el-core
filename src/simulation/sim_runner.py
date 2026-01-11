@@ -7,6 +7,7 @@ import numpy as np
 from .dto.step_io import StepInput, StepResult, AgentStepResult
 from .sim_agent import SimAgent
 from .sim_dynamics import SimDynamics
+from src.ontology.pipeline import pipeline_quick_test
 
 
 @dataclass
@@ -21,7 +22,7 @@ class StepRunner:
     def run(self, agents: dict[str, SimAgent], step_input: StepInput, step_idx: int) -> StepResult:
         results: list[AgentStepResult] = []
 
-        picked = pipeline_quick_test()
+        picked = pipeline_quick_test(agents['0'].state.current_vec)
         impacts = []
         impacts.append(picked.impact)
         for agent_id, agent in agents.items():

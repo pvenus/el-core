@@ -514,6 +514,162 @@ class Reasoner:
             nearest_concepts=nearest_concepts,
         )
 
+    def infer_from_anchor_scores(
+        self,
+        anchor_scores: Dict[str, float] | Sequence[float],
+        *,
+        category_id: Optional[str] = None,
+        top_k_concepts: int = 10,
+        min_concept_score: float = -1.0,
+        l2_normalize_query: bool = True,
+        query_label: str = "<anchor_scores>",
+    ) -> InferenceResult:
+        """Infer nearest concepts from *anchor-space* scores.
+
+        This helper lets you feed a 7-axis emotion vector (or any anchor-axis
+        score vector) and retrieves the most similar concepts.
+
+        Inputs
+        - anchor_scores:
+            * dict: {anchor_id: score}
+            * sequence: scores aligned with `self._anchors` order
+
+        Strategy
+        - Build a synthetic embedding vector by weighted-summing anchor vectors.
+        - Optionally L2-normalize the synthetic vector.
+        - Rank concepts by cosine similarity.
+        """
+
+        # 1) Convert anchor scores into (anchor, weight) pairs
+        weights_by_id: Dict[str, float] = {}
+        if isinstance(anchor_scores, dict):
+            for k, v in anchor_scores.items():
+                try:
+                    weights_by_id[str(k)] = float(v)
+                except Exception:
+                    continue
+        else:
+            seq = list(anchor_scores)
+            for i, a in enumerate(self._anchors):
+                if i >= len(seq):
+                    break
+                try:
+                    weights_by_id[_anchor_id(a) or _anchor_name(a)] = float(seq[i])
+                except Exception:
+                    continue
+
+        # 2) Weighted-sum in embedding space
+        if not self._anchors:
+            return InferenceResult(
+                query=query_label,
+                category_id=category_id,
+                top_anchors=[],
+                nearest_concepts=[],
+            )
+
+        # Determine embedding dim from first available anchor vector
+        dim: Optional[int] = None
+        for a in self._anchors:
+            av = _anchor_vector(a)
+            if av:
+                dim = len(av)
+                break
+        if dim is None or dim <= 0:
+            return InferenceResult(
+                query=query_label,
+                category_id=category_id,
+                top_anchors=[],
+                nearest_concepts=[],
+            )
+
+        synth: List[float] = [0.0] * dim
+        used = 0
+        for a in self._anchors:
+            aid = _anchor_id(a) or _anchor_name(a)
+            w = weights_by_id.get(str(aid), None)
+            if w is None:
+                continue
+            av = _anchor_vector(a)
+            if not av or len(av) != dim:
+                continue
+            used += 1
+            for j in range(dim):
+                synth[j] += w * float(av[j])
+
+        _p(
+            f"[infer_from_anchor_scores] used={used}/{len(self._anchors)} anchors "
+            f"dim={dim} category_id={category_id!r}"
+        )
+
+        # 3) Optional L2 normalize the synthetic query vector
+        if l2_normalize_query:
+            import math
+
+            n2 = 0.0
+            for x in synth:
+                n2 += x * x
+            if n2 > 0.0:
+                inv = 1.0 / math.sqrt(n2)
+                for j in range(dim):
+                    synth[j] *= inv
+
+        # 4) Rank concepts
+        nearest_concepts = self._nearest_concepts_by_vector(
+            synth,
+            category_id=category_id,
+            top_k=top_k_concepts,
+            min_score=min_concept_score,
+        )
+
+        # Provide the anchor scores back as an anchor list for convenience
+        # (sorted by provided weight)
+        anchors_scored: List[ScoredItem] = []
+        for a in self._anchors:
+            aid = _anchor_id(a) or _anchor_name(a)
+            if str(aid) not in weights_by_id:
+                continue
+            anchors_scored.append(
+                ScoredItem(
+                    id=str(aid),
+                    label=_anchor_name(a) or str(aid),
+                    score=float(weights_by_id[str(aid)]),
+                    meta={"source": "anchor_scores"},
+                )
+            )
+        anchors_scored.sort(key=lambda x: x.score, reverse=True)
+
+        return InferenceResult(
+            query=query_label,
+            category_id=category_id,
+            top_anchors=anchors_scored,
+            nearest_concepts=nearest_concepts,
+        )
+
+    def infer_concepts_as_dicts(
+        self,
+        vec: Sequence[float],
+        *,
+        category_id: Optional[str] = None,
+        top_k: int = 10,
+        min_score: float = -1.0,
+        query_label: str = "<vector>",
+    ) -> List[Dict[str, Any]]:
+        """Return nearest concepts as plain dicts including score.
+
+        This is primarily for integration points that expect a list of
+        {id,label,score} objects.
+        """
+        res = self.infer_from_vector(
+            vec,
+            category_id=category_id,
+            top_k_anchors=0,
+            top_k_concepts=top_k,
+            min_anchor_score=-1.0,
+            min_concept_score=min_score,
+            query_label=query_label,
+        )
+        return [it.to_dict(include_meta=False) for it in res.nearest_concepts]
+
     # ----------
     # Internal ranking helpers
     # ----------
@@ -711,27 +867,30 @@ if __name__ == "__main__":
         print("  concepts:")
         for it in res2.nearest_concepts:
             print(f"    - {it.label}: {it.score:.3f}")
-    def infer_concepts_as_dicts(
-        self,
-        vec: Sequence[float],
-        *,
-        category_id: Optional[str] = None,
-        top_k: int = 10,
-        min_score: float = -1.0,
-        query_label: str = "<vector>",
-    ) -> List[Dict[str, Any]]:
-        """Return nearest concepts as plain dicts including score.
 
-        This is primarily for integration points that expect a list of
-        {id,label,score} objects.
-        """
-        res = self.infer_from_vector(
-            vec,
-            category_id=category_id,
-            top_k_anchors=0,
-            top_k_concepts=top_k,
-            min_anchor_score=-1.0,
-            min_concept_score=min_score,
-            query_label=query_label,
-        )
-        return [it.to_dict(include_meta=False) for it in res.nearest_concepts]
+    # Example: anchor-score -> nearest concepts (7-axis emotion vector)
+    # You can think of these as "emotion axis strengths" in your simulation space.
+    scores = {
+        "joy": 0.10,
+        "anger": 0.80,
+        "sad": 0.05,
+        "fear": 0.10,
+        "love": 0.00,
+        "aversion": 0.20,
+        "desire": 0.05,
+    }
+    res3 = r.infer_from_anchor_scores(
+        scores,
+        category_id=None,
+        top_k_concepts=8,
+        min_concept_score=-1.0,
+        l2_normalize_query=True,
+        query_label="anchor_scores.demo",
+    )
+    print("\n[infer_from_anchor_scores]", res3.query)
+    print("  anchor_scores:")
+    for it in res3.top_anchors:
+        print(f"    - {it.label}: {it.score:.3f}")
+    print("  concepts:")
+    for it in res3.nearest_concepts:
+        print(f"    - {it.label}: {it.score:.3f}")

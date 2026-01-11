@@ -98,6 +98,35 @@ class OntologyConceptPipeline:
         )
         return [it.to_dict(include_meta=False) for it in res.nearest_concepts]
 
+    def infer_concepts_from_anchor_scores(
+        self,
+        anchor_scores: Dict[str, float] | Sequence[float],
+        *,
+        category_id: Optional[str] = None,
+        top_k: int = 10,
+        min_score: float = -1.0,
+        normalize: bool = True,
+        query_label: str = "<anchor_scores>",
+    ) -> List[Dict[str, Any]]:
+        """Infer nearest concepts from 7-axis anchor scores.
+
+        `anchor_scores` may be either:
+          - dict: {"joy": 0.1, "anger": 0.8, ...}
+          - list/tuple: aligned to the ontology anchor order used by Reasoner
+
+        Returns a list of plain dicts: {id,label,score}.
+        """
+        res = self.reasoner.infer_from_anchor_scores(
+            anchor_scores,
+            category_id=category_id,
+            top_k_concepts=top_k,
+            min_concept_score=min_score,
+            l2_normalize_query=normalize,
+            query_label=query_label,
+        )
+
+        return [it.to_dict(include_meta=False) for it in res.nearest_concepts]
+
     # ------------------------------------------------------------
     # Scenario selection (concept-based)
     # ------------------------------------------------------------
@@ -143,7 +172,7 @@ class OntologyConceptPipeline:
         return mgr.select_choice_by_concepts(round_id, concepts, ctx=ctx)
 
 
-def pipeline_quick_test():
+def pipeline_quick_test(anchor_scores: Dict[str, float] | Sequence[float]):
     """Quick manual test:
 
     ontology -> concepts -> pick a choice in a specific round
@@ -152,10 +181,9 @@ def pipeline_quick_test():
 
     mgr = build_simple_demo_scenario()
 
-    demo = "rage"
-    concepts = pipe.infer_concepts_from_text(demo, top_k=5)
+    concepts = pipe.infer_concepts_from_anchor_scores(anchor_scores, top_k=8)
 
-    print("[infer_concepts_from_text]", demo)
+    print("[infer_concepts_from_anchor_scores]", anchor_scores)
     for it in concepts:
         print(f"  - {it['id']} / {it['label']}: {it['score']:.3f}")
 
@@ -166,5 +194,14 @@ def pipeline_quick_test():
 
 
 if __name__ == "__main__":
-    picked = pipeline_quick_test()
+    anchor_scores = [
+        0.10,
+        0.80,
+        0.05,
+        0.10,
+        0.00,
+        0.20,
+        0.05,
+    ]
+    picked = pipeline_quick_test(anchor_scores=anchor_scores)
     print(f"{picked}")
