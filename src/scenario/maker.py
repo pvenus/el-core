@@ -277,13 +277,7 @@ class DefaultOntologyResolver:
         # Persist for consumers/debug
         self._last_anchor_ids = anchor_ids
 
-        if not scores:
-            return None
-        v = np.asarray(scores, dtype=np.float32)
-        n = float(np.linalg.norm(v))
-        if n <= 0:
-            return None
-        return (v / n).tolist()
+        return scores
     """Ontology-backed nearest-node resolver (best-effort).
 
     It will try to import your existing ontology builder/reasoner.
@@ -828,7 +822,7 @@ if __name__ == "__main__":
     art = pipe.make_choice(
         demo,
         round_id=1,
-        overrides={"embed_text": "I'm here with you. Let's take a breath together."},
+        overrides={"embed_text": "111"},
         debug=True,
     )
 
