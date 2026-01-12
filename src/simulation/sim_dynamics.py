@@ -5,9 +5,9 @@ from typing import Callable
 
 import numpy as np
 
-from .dto.impact import Impact
-from .dto.vector_space import VectorSpaceSpec
-from .sim_agent import SimAgent
+from src.simulation.dto.impact import Impact
+from src.simulation.dto.vector_space import VectorSpaceSpec
+from src.simulation.sim_agent import SimAgent
 
 
 @dataclass
