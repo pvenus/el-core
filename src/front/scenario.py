@@ -1,3 +1,32 @@
+import re
+from typing import Dict
+
+# Helper: Parse scored concepts from string like "warmth(1.000), hostility(0.841)"
+def parse_scored_concepts(text: str) -> Dict[str, float]:
+    """
+    Parse strings like:
+      warmth(1.000), hostility(0.841), friendliness(0.835)
+    into a {concept: score} dict.
+
+    Rules:
+    - 1.0 is treated as 100% similarity baseline
+    - Scores are clamped to [0.0, 1.0]
+    - Whitespace tolerant
+    """
+    out: Dict[str, float] = {}
+    if not text:
+        return out
+    for name, val in re.findall(r"([a-zA-Z0-9_\-]+)\s*\(\s*([0-9]*\.?[0-9]+)\s*\)", text):
+        try:
+            f = float(val)
+            if f < 0.0:
+                f = 0.0
+            if f > 1.0:
+                f = 1.0
+            out[name] = f
+        except Exception:
+            continue
+    return out
 from pathlib import Path
 import sys
 
@@ -11,6 +40,52 @@ import streamlit as st
 import json
 import os
 from typing import Any, Dict, List
+
+# -----------------------------
+# Ontology/Concepts Helpers
+# -----------------------------
+DEFAULT_CATEGORY_DIR = "data/ontology_categories"
+
+def _load_total_categories(path: str = "") -> List[Dict[str, Any]]:
+    """Load items from data/ontology_categories/total.json (or given path)."""
+    p = path or os.path.join(DEFAULT_CATEGORY_DIR, "total.json")
+    if not os.path.exists(p):
+        return []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        raw = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(raw, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for it in raw:
+            if isinstance(it, dict):
+                w = str(it.get("word") or "").strip()
+                if not w:
+                    continue
+                out.append({
+                    "word": w,
+                    "enabled": bool(it.get("enabled", True)),
+                    "dim": it.get("dim"),
+                })
+            elif isinstance(it, str):
+                w = it.strip()
+                if not w:
+                    continue
+                out.append({"word": w, "enabled": True, "dim": None})
+        return out
+    except Exception:
+        return []
+
+def _dedup_preserve_order(xs: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for x in xs:
+        if not x or x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
 
 from src.scenario.maker import ChoiceMakerPipeline
 
@@ -35,7 +110,8 @@ def _load_items(path: str) -> List[Dict[str, Any]]:
             continue
 
         # New format: full choice payload already stored
-        if ("choice_id" in it) or ("action" in it):
+        # NOTE: OFF-mode entries may not have `choice_id`/`action` but DO have `concepts`/`embed_vec`.
+        if any(k in it for k in ("choice_id", "action", "concepts", "embed_vec", "impact", "direction")):
             display_text = str(it.get("display_text", ""))
             embed_text = str(it.get("action", {}).get("embed_text", it.get("embed_text", "")))
             items.append(
@@ -192,11 +268,6 @@ def render_scenario_lab():
             "embed_text": item.get("embed_text"),
         }
 
-        # ontology best
-        ob = item.get("ontology_best") or {}
-        out["best_id"] = ob.get("id")
-        out["best_score"] = ob.get("score")
-
         # impact
         impact = item.get("impact") or {}
         out["impact_mag"] = impact.get("magnitude")
@@ -204,11 +275,40 @@ def render_scenario_lab():
         out["delta_vars"] = _safe_json(impact.get("delta_vars") or {})
         out["direction"] = _safe_json(impact.get("direction") or [])
 
-        # concepts: keep as readable compact string (top 10 already)
-        concepts = item.get("concepts") or []
-        out["concepts"] = ", ".join(
-            [f"{c.get('id')}({(c.get('score') or 0):.3f})" for c in concepts if isinstance(c, dict)]
-        )
+        # concepts: support concept_scores(dict), list[dict], or list[str]
+        concept_scores = item.get("concept_scores")
+        if isinstance(concept_scores, dict) and concept_scores:
+            # Render in a stable, ranked order: follow `concepts` list if present, else sort by score desc.
+            ordered_names: List[str] = []
+            concepts = item.get("concepts") or []
+            if isinstance(concepts, list) and concepts:
+                ordered_names = [str(c).strip() for c in concepts if str(c).strip()]
+            if not ordered_names:
+                ordered_names = [k for k, _v in sorted(concept_scores.items(), key=lambda kv: float(kv[1] or 0.0), reverse=True)]
+
+            parts: List[str] = []
+            for name in ordered_names:
+                try:
+                    sc = float(concept_scores.get(name, 0.0))
+                except Exception:
+                    sc = 0.0
+                parts.append(f"{name}({sc:.3f})")
+            out["concepts"] = ", ".join(parts)
+
+        else:
+            concepts = item.get("concepts") or []
+            if isinstance(concepts, list) and concepts and isinstance(concepts[0], dict):
+                out["concepts"] = ", ".join(
+                    [
+                        f"{c.get('id')}({(c.get('score') or 0):.3f})"
+                        for c in concepts
+                        if isinstance(c, dict)
+                    ]
+                )
+            elif isinstance(concepts, list):
+                out["concepts"] = ", ".join([str(c) for c in concepts if str(c).strip()])
+            else:
+                out["concepts"] = str(concepts)
 
         # embed vec can be huge: show length + preview
         ev = item.get("embed_vec") or []
@@ -258,8 +358,6 @@ def render_scenario_lab():
             "display_text",
             "enabled",
             "round_id",
-            "best_id",
-            "best_score",
             "impact_mag",
             "impact_dur",
             "delta_vars",
@@ -318,13 +416,72 @@ def render_scenario_lab():
 
     if st.session_state.get("scenario_add_open"):
         def _add_body() -> None:
-            st.caption("display_text / embed_text 두 값을 입력한 뒤 OK를 누르면 즉시 저장되고 화면이 갱신됩니다.")
-            new_display = st.text_area("display_text", value="", height=120)
-            new_embed = st.text_area("embed_text", value="", height=120)
+            # Tag pool from total.json (used only for concept selection mode)
+            total_items = _load_total_categories()
+            enabled_words = [
+                it["word"]
+                for it in total_items
+                if bool(it.get("enabled", True)) and str(it.get("word", "")).strip()
+            ]
+            enabled_words = _dedup_preserve_order(enabled_words)
+
+            st.caption(
+                "텍스트는 직접 입력합니다. Embed mode ON이면 임베딩을 생성하고, OFF이면 1~3순위 concept만 저장합니다."
+            )
+
+            embed_mode = st.toggle("Embed mode", value=False)
+
+            # User-entered text (always present)
+            src_text = st.text_area("텍스트", value="", height=120, placeholder="여기에 지문/대사를 입력하세요")
 
             col_round, _col_spacer = st.columns([1, 1])
             with col_round:
                 new_round = st.number_input("round_id", min_value=1, value=1, step=1)
+
+            # OFF mode: 3 ranked concept selections + numeric scores
+            concepts: List[str] = []
+            if not embed_mode:
+                all_concepts = ["(none)"] + sorted(enabled_words)
+
+                st.caption("OFF mode: 1~3순위 concept를 선택하고, 오른쪽에 유사도(0.0~1.0)를 입력하세요. 1.0 = 100%")
+
+                cA, sA = st.columns([3, 1])
+                with cA:
+                    c1_val = st.selectbox("Concept #1", options=all_concepts, index=0, key="concept_1")
+                with sA:
+                    s1_val = st.number_input("Score #1", min_value=0.0, max_value=1.0, value=1.0, step=0.001, format="%.3f", key="concept_score_1")
+
+                cB, sB = st.columns([3, 1])
+                with cB:
+                    c2_val = st.selectbox("Concept #2", options=all_concepts, index=0, key="concept_2")
+                with sB:
+                    s2_val = st.number_input("Score #2", min_value=0.0, max_value=1.0, value=0.85, step=0.001, format="%.3f", key="concept_score_2")
+
+                cC, sC = st.columns([3, 1])
+                with cC:
+                    c3_val = st.selectbox("Concept #3", options=all_concepts, index=0, key="concept_3")
+                with sC:
+                    s3_val = st.number_input("Score #3", min_value=0.0, max_value=1.0, value=0.70, step=0.001, format="%.3f", key="concept_score_3")
+
+                # Build a canonical scored string for downstream parsing/saving.
+                scored_parts: List[str] = []
+                for name, sc in [(c1_val, s1_val), (c2_val, s2_val), (c3_val, s3_val)]:
+                    n = str(name).strip()
+                    if not n or n == "(none)":
+                        continue
+                    try:
+                        f = float(sc)
+                    except Exception:
+                        f = 0.0
+                    if f < 0.0:
+                        f = 0.0
+                    if f > 1.0:
+                        f = 1.0
+                    scored_parts.append(f"{n}({f:.3f})")
+
+                # Keep compatibility with existing payload logic
+                st.session_state["concepts_scored_text"] = ", ".join(scored_parts)
+                st.session_state["concepts_list"] = [p.split("(", 1)[0] for p in scored_parts]
 
             d_ok, d_cancel = st.columns([1, 1])
             with d_ok:
@@ -337,36 +494,91 @@ def render_scenario_lab():
                 st.rerun()
 
             if ok:
+                if not str(src_text).strip():
+                    st.warning("텍스트를 입력해 주세요.")
+                    return
+
                 items = st.session_state.get("scenario_items", [])
-                try:
+
+                # Embed mode ON: generate embedding via pipeline
+                if embed_mode:
+                    try:
+                        pipe = _get_pipe()
+                        art = pipe.make_choice(
+                            str(src_text).strip(),
+                            round_id=int(new_round),
+                            overrides=None,
+                            debug=False,
+                        )
+
+                        payload = art.to_choice_payload()
+
+                        # Remove best fields source (ontology_best) entirely.
+                        if isinstance(payload, dict):
+                            payload.pop("ontology_best", None)
+                            # In embed mode, concepts can be empty by default
+                            payload.setdefault("concepts", [])
+
+                        items.append(
+                            {
+                                "display_text": str(src_text).strip(),
+                                "embed_text": str(art.embed_text),
+                                "enabled": True,
+                                "round_id": int(new_round),
+                                "artifact": payload,
+                            }
+                        )
+                    except Exception:
+                        # fallback: add without artifact
+                        items.append(
+                            {
+                                "display_text": str(src_text).strip(),
+                                "embed_text": str(src_text).strip(),
+                                "enabled": True,
+                                "round_id": int(new_round),
+                                "artifact": {
+                                    "display_text": str(src_text).strip(),
+                                    "embed_text": str(src_text).strip(),
+                                    "concepts": [],
+                                },
+                            }
+                        )
+
+                # Embed mode OFF: build ChoiceArtifact via make_choice_off()
+                else:
                     pipe = _get_pipe()
-                    art = pipe.make_choice(
-                        str(new_display),
+
+                    # Ranked concepts (already limited to 3 by UI)
+                    ranked_concepts = list(st.session_state.get("concepts_list", []))
+
+                    # Parse scored text into {concept: score}
+                    scored_text = st.session_state.get("concepts_scored_text", "")
+                    concept_scores = parse_scored_concepts(scored_text)
+
+                    art = pipe.make_choice_off(
+                        str(src_text).strip(),
+                        concepts_ranked=ranked_concepts,
+                        concept_scores=concept_scores,
                         round_id=int(new_round),
-                        overrides={"embed_text": str(new_embed)} if str(new_embed).strip() else None,
                         debug=False,
                     )
+
                     payload = art.to_choice_payload()
+
+                    # Ensure OFF-mode payload has no ontology_best duplication at top-level
+                    if isinstance(payload, dict):
+                        payload.pop("ontology_best", None)
+
                     items.append(
                         {
-                            "display_text": str(new_display),
+                            "display_text": str(src_text).strip(),
                             "embed_text": str(art.embed_text),
                             "enabled": True,
                             "round_id": int(new_round),
                             "artifact": payload,
                         }
                     )
-                except Exception:
-                    # fallback: add empty artifact if make_choice fails
-                    items.append(
-                        {
-                            "display_text": str(new_display),
-                            "embed_text": str(new_embed),
-                            "enabled": True,
-                            "round_id": int(new_round),
-                            "artifact": None,
-                        }
-                    )
+
                 st.session_state["scenario_items"] = items
 
                 # Auto save + reload

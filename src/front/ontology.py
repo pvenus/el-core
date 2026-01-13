@@ -510,81 +510,92 @@ def render_ontology_lab():
             )
 
     # ---------------------------------
-    # 3) Pairwise similarity (all A-B)
+    # 3) Category items table (total.json)
     # ---------------------------------
-    st.subheader("3) Pairwise similarity (all pairs)")
+    st.subheader("3) Category items (total.json)")
 
-    st.caption("All pairwise cosine similarities across the current emotion list (higher = more similar).")
+    st.caption("data/ontology_categories/total.json 의 items 를 표로 출력합니다.")
 
-    # Options
-    only_enabled = st.checkbox("Only enabled items", value=True)
-    top_k_pairs = st.number_input("Show top K pairs", min_value=10, max_value=5000, value=100, step=10)
+    total_path = os.path.join(DEFAULT_CATEGORY_DIR, "total.json")
 
-    # Build candidate indices
-    cand_idxs = []
-    for i, it in enumerate(items):
-        if only_enabled and not bool(it.get("enabled", True)):
-            continue
-        ev = it.get("embed_vec")
-        if isinstance(ev, list) and len(ev) > 0:
-            cand_idxs.append(i)
-
-    if len(cand_idxs) < 2:
-        st.info("Not enough items with vectors to compute pairwise similarities.")
+    if not os.path.exists(total_path):
+        st.warning(f"Not found: {total_path}")
     else:
-        pair_rows: List[Dict[str, Any]] = []
-        for a_pos in range(len(cand_idxs)):
-            a = cand_idxs[a_pos]
-            a_it = items[a]
-            a_word = str(a_it.get("word", "")).strip()
-            a_vec = a_it.get("embed_vec")
-            if not isinstance(a_vec, list) or len(a_vec) == 0:
-                continue
+        try:
+            with open(total_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            raw_items = payload.get("items") if isinstance(payload, dict) else None
+            if not isinstance(raw_items, list):
+                st.warning("total.json 형식이 올바르지 않습니다. (payload['items'] 가 list 여야 합니다)")
+            else:
+                # Collect all sims keys across items to make stable columns
+                sim_keys = []
+                sim_seen = set()
+                for it in raw_items:
+                    if not isinstance(it, dict):
+                        continue
+                    sims = it.get("sims")
+                    if not isinstance(sims, dict):
+                        continue
+                    for k in sims.keys():
+                        kk = str(k)
+                        if kk not in sim_seen:
+                            sim_seen.add(kk)
+                            sim_keys.append(kk)
 
-            for b_pos in range(a_pos + 1, len(cand_idxs)):
-                b = cand_idxs[b_pos]
-                b_it = items[b]
-                b_word = str(b_it.get("word", "")).strip()
-                b_vec = b_it.get("embed_vec")
-                if not isinstance(b_vec, list) or len(b_vec) == 0:
-                    continue
+                rows: List[Dict[str, Any]] = []
+                enabled_cnt = 0
+                for it in raw_items:
+                    if isinstance(it, str):
+                        # legacy shorthand
+                        word = it
+                        enabled = True
+                        dim = None
+                        embed_vec = None
+                        sims = None
+                    elif isinstance(it, dict):
+                        word = str(it.get("word") or "").strip()
+                        enabled = bool(it.get("enabled", True))
+                        dim = it.get("dim")
+                        embed_vec = it.get("embed_vec")
+                        sims = it.get("sims")
+                    else:
+                        continue
 
-                comp_dim = min(len(a_vec), len(b_vec))
-                sim = _cos_sim(a_vec, b_vec)
-                pair_rows.append({
-                    "idx_a": a,
-                    "word_a": a_word,
-                    "idx_b": b,
-                    "word_b": b_word,
-                    "cos_sim": float(sim),
-                    "cos_dist": float(1.0 - float(sim)),
-                    "comp_dim": int(comp_dim),
-                    "same_dim": (len(a_vec) == len(b_vec)),
-                })
+                    if enabled:
+                        enabled_cnt += 1
 
-        # Sort by similarity desc
-        pair_rows.sort(key=lambda r: -r["cos_sim"])
+                    embed_vec_len = len(embed_vec) if isinstance(embed_vec, list) else 0
+                    dim_val = int(dim) if isinstance(dim, int) else (embed_vec_len if embed_vec_len > 0 else None)
 
-        # Trim
-        k = int(top_k_pairs)
-        if k > 0 and len(pair_rows) > k:
-            pair_rows = pair_rows[:k]
+                    row: Dict[str, Any] = {
+                        "word": word,
+                        "enabled": enabled,
+                        "dim": dim_val,
+                        "embed_vec_len": int(embed_vec_len),
+                    }
 
-        st.dataframe(
-            pair_rows,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "idx_a": st.column_config.NumberColumn("A idx", width="small"),
-                "word_a": st.column_config.TextColumn("A word", width="large"),
-                "idx_b": st.column_config.NumberColumn("B idx", width="small"),
-                "word_b": st.column_config.TextColumn("B word", width="large"),
-                "cos_sim": st.column_config.NumberColumn("cos_sim", format="%.4f", width="small"),
-                "cos_dist": st.column_config.NumberColumn("cos_dist", format="%.4f", width="small"),
-                "comp_dim": st.column_config.NumberColumn("comp_dim", width="small"),
-                "same_dim": st.column_config.CheckboxColumn("same_dim", width="small"),
-            },
-        )
+                    # Expand sims into columns (missing -> None)
+                    if sim_keys:
+                        sims_dict = sims if isinstance(sims, dict) else {}
+                        for k in sim_keys:
+                            v = sims_dict.get(k)
+                            row[k] = float(v) if isinstance(v, (int, float)) else None
+
+                    rows.append(row)
+
+                st.caption(f"items: {len(rows)} | enabled: {enabled_cnt} | sims_cols: {len(sim_keys)}")
+
+                # Sort: enabled first, then word
+                rows.sort(key=lambda r: (not bool(r.get("enabled", True)), str(r.get("word", ""))))
+
+                st.dataframe(
+                    rows,
+                    hide_index=True,
+                    use_container_width=True,
+                )
+        except Exception as e:
+            st.warning(f"Failed to load total.json: {e}")
 
     # ---------------------------------------------
     # 4) Difference-vector similarity (A->B vs C->D)

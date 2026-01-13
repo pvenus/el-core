@@ -716,6 +716,29 @@ class ChoiceMakerPipeline:
                 norm.append(c)
             concepts = norm
 
+        # Limit concepts to TOP-3 (ranked) so UI/storage stay consistent.
+        # - If concepts are dicts: sort by score desc and keep 3.
+        # - If concepts are strings: keep first 3.
+        if isinstance(concepts, list) and concepts:
+            if isinstance(concepts[0], dict):
+                def _c_score(x: Any) -> float:
+                    if not isinstance(x, dict):
+                        return 0.0
+                    s = x.get("score")
+                    if s is None:
+                        s = x.get("similarity")
+                    if s is None:
+                        s = x.get("sim")
+                    try:
+                        return float(s) if s is not None else 0.0
+                    except Exception:
+                        return 0.0
+
+                # stable sort: higher score first
+                concepts = sorted(concepts, key=_c_score, reverse=True)[:3]
+            else:
+                concepts = [c for c in concepts if str(c).strip()][:3]
+
         ontology_best = None
         try:
             # Allow override of ontology category (or disable by setting None explicitly)
@@ -797,6 +820,209 @@ class ChoiceMakerPipeline:
         return art
 
 
+    def make_choice_off(
+        self,
+        display_text: str,
+        *,
+        concepts_ranked: List[str],
+        choice_id: Optional[str] = None,
+        round_id: int = 1,
+        concept_scores: Optional[Dict[str, float]] = None,
+        overrides: Optional[Dict[str, Any]] = None,
+        debug: bool = False,
+    ) -> ChoiceArtifact:
+        """Create one ChoiceArtifact without embedding inference (EMBED MODE OFF).
+
+        - Input: `concepts_ranked` (up to 3 concept ids/labels)
+        - Output: ChoiceArtifact
+
+        Behavior:
+        - Stores concepts in a consistent, ranked format (top-3)
+        - Uses the #1 concept's embedding (from ontology) to build Impact.direction as an anchor-score vector
+        - Does NOT require `embed_vec` to exist
+        """
+        overrides = overrides or {}
+        concept_scores = concept_scores or {}
+
+        # Normalize ranked concepts (top-3, non-empty)
+        ranked: List[str] = [str(c).strip() for c in (concepts_ranked or []) if str(c).strip()]
+        ranked = ranked[:3]
+
+        # Build a consistent concept list (dicts with score)
+        concepts: List[Dict[str, Any]] = []
+        for i, cid in enumerate(ranked):
+            sc = concept_scores.get(cid)
+            if sc is None:
+                # sensible defaults for ranked items
+                sc = 1.0 if i == 0 else (0.85 if i == 1 else 0.70)
+            try:
+                sc_f = float(sc)
+            except Exception:
+                sc_f = 0.0
+            if sc_f < 0.0:
+                sc_f = 0.0
+            if sc_f > 1.0:
+                sc_f = 1.0
+            concepts.append({"id": cid, "label": cid, "score": sc_f})
+
+        embed_text = str(overrides.get("embed_text") or extract_embed_text(display_text))
+
+        # Try to fetch the embedding vector for the #1 concept from the loaded ontology
+        def _get_concept_embedding(concept_id: str) -> Optional[List[float]]:
+            # Best-effort: access ontology object directly if present
+            onto = getattr(self.ontology_resolver, "_ontology_obj", None)
+            if onto is not None:
+                concepts_map = getattr(onto, "concepts", None)
+                if isinstance(concepts_map, dict) and concept_id in concepts_map:
+                    c_obj = concepts_map.get(concept_id)
+                    # Concept object may have `embedding` attribute
+                    emb = getattr(c_obj, "embedding", None)
+                    if emb is None and isinstance(c_obj, dict):
+                        emb = c_obj.get("embedding")
+                    if emb is not None:
+                        try:
+                            return list(emb)
+                        except Exception:
+                            pass
+
+                # Also allow anchors to be used as direction sources (e.g., 'joy', 'anger')
+                anchors_map = getattr(onto, "anchor_axes", None)
+                if isinstance(anchors_map, dict) and concept_id in anchors_map:
+                    a_obj = anchors_map.get(concept_id)
+                    emb = getattr(a_obj, "embedding", None)
+                    if emb is None and isinstance(a_obj, dict):
+                        emb = a_obj.get("embedding")
+                    if emb is not None:
+                        try:
+                            return list(emb)
+                        except Exception:
+                            pass
+
+            # Fallback: go through reasoner if resolver exposes it
+            try:
+                r = getattr(self.ontology_resolver, "_get_reasoner", None)
+                if callable(r):
+                    rr = r()
+                    if rr is not None:
+                        # Try common locations for concept maps
+                        for attr in ("concepts", "_concepts", "concept_map", "_concept_map"):
+                            cm = getattr(rr, attr, None)
+                            if isinstance(cm, dict) and concept_id in cm:
+                                c_obj = cm.get(concept_id)
+                                emb = getattr(c_obj, "embedding", None)
+                                if emb is None and isinstance(c_obj, dict):
+                                    emb = c_obj.get("embedding")
+                                if emb is not None:
+                                    try:
+                                        return list(emb)
+                                    except Exception:
+                                        pass
+            except Exception:
+                pass
+
+            return None
+
+        direction_list: Optional[List[float]] = None
+        anchor_ids: List[str] = []
+
+        # Use #1 concept to derive direction
+        first_cid = ranked[0] if ranked else ""
+        c_vec = _get_concept_embedding(first_cid) if first_cid else None
+
+        # Fallback: if the concept is not in ontology, derive a deterministic vector from the concept text
+        if (c_vec is None or not isinstance(c_vec, list) or len(c_vec) == 0) and first_cid:
+            try:
+                # Use the pipeline's embedder (hash backend if no model_path) for a stable vector
+                c_vec = list(self.embedder.embed(first_cid, self.dim))
+            except Exception:
+                c_vec = None
+
+        if isinstance(c_vec, list) and len(c_vec) > 0:
+            try:
+                # Allow override of ontology category (or disable by setting False)
+                onto_cat = overrides.get("ontology_category_id", "emotion")
+                if onto_cat is not False and hasattr(self.ontology_resolver, "infer_anchors_direction"):
+                    direction_list = self.ontology_resolver.infer_anchors_direction(
+                        c_vec,
+                        category_id=(None if onto_cat is None else str(onto_cat)),
+                        top_k_anchors=int(overrides.get("top_k_anchors", 7)),
+                        min_score=float(overrides.get("min_score") or -1.0),
+                    )
+                    anchor_ids = list(getattr(self.ontology_resolver, "_last_anchor_ids", []) or [])
+            except Exception:
+                direction_list = None
+                anchor_ids = []
+
+        if isinstance(direction_list, list) and len(direction_list) > 0:
+            direction = np.asarray(direction_list, dtype=np.float32)
+            duration = max(1, int(float(direction.sum())))
+        else:
+            direction = np.zeros(0, dtype=np.float32)
+            duration = 1
+
+        # Best-effort ontology_best using the #1 concept vector
+        ontology_best = None
+        try:
+            onto_cat = overrides.get("ontology_category_id", "emotion")
+            if onto_cat is not False and c_vec is not None:
+                ontology_best = self.ontology_resolver.best_match(
+                    c_vec,
+                    category_id=(None if onto_cat is None else str(onto_cat)),
+                )
+        except Exception:
+            ontology_best = None
+
+        impact = Impact(
+            direction=direction,
+            magnitude=float(overrides.get("magnitude") or 1.0),
+            duration=duration,
+            profile={
+                "ontology_best": ontology_best,
+                "anchor_ids": anchor_ids,
+                "direction_source": {"type": "concept", "concept_id": first_cid},
+            },
+        )
+
+        # Stable IDs if omitted
+        if choice_id is None:
+            h = hashlib.sha1(embed_text.encode("utf-8")).hexdigest()[:8]
+            choice_id = f"r{int(round_id)}_{h}"
+
+        # Embed vec is optional in OFF mode; keep override if provided, else omit.
+        embed_vec_override = overrides.get("embed_vec")
+        embed_vec: List[float] = list(embed_vec_override) if isinstance(embed_vec_override, list) else []
+
+        art = ChoiceArtifact(
+            choice_id=str(choice_id),
+            round_id=int(round_id),
+            display_text=str(display_text),
+            embed_text=str(embed_text),
+            concepts=list(concepts),
+            embed_vec=embed_vec,
+            ontology_best=ontology_best,
+            impact=impact,
+        )
+
+        if debug:
+            print("[MAKER-OFF] display_text=", display_text)
+            print("[MAKER-OFF] embed_text=", embed_text)
+            print("[MAKER-OFF] concepts=", concepts)
+            print("[MAKER-OFF] direction_source_concept=", first_cid)
+            dir_head = impact.direction[:8].tolist() if isinstance(impact.direction, np.ndarray) else []
+            print(
+                "[MAKER-OFF] impact=",
+                {
+                    "magnitude": impact.magnitude,
+                    "duration": impact.duration,
+                    "delta_vars": impact.delta_vars,
+                    "profile": impact.profile,
+                    "direction_head": [float(x) for x in dir_head],
+                },
+            )
+
+        return art
+
+
 # ---------------------------
 # Quick manual test
 # ---------------------------
@@ -822,9 +1048,21 @@ if __name__ == "__main__":
     art = pipe.make_choice(
         demo,
         round_id=1,
-        overrides={"embed_text": "111"},
+        overrides={"embed_text": "sad, joy"},
         debug=True,
     )
 
     print("\nChoice payload:")
     print(art.to_choice_payload())
+
+    print("\n--- OFF mode test (make_choice_off) ---")
+    off_display = "You quietly nod, choosing to stay close. (조용히 고개를 끄덕이며 곁에 남는다.)"
+    art_off = pipe.make_choice_off(
+        off_display,
+        round_id=1,
+        concepts_ranked=["admiration", "adoration", "affection"],
+        concept_scores={"admiration": 1.0, "adoration": 0.841, "affection": 0.835},
+        debug=True,
+    )
+    print("\nOFF Choice payload:")
+    print(art_off.to_choice_payload())

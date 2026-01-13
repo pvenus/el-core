@@ -10,7 +10,7 @@ from src.ontology.infer import (
     _try_build_default_ontology,
 )
 
-from src.scenario.builder import build_simple_demo_scenario
+from src.scenario.builder import build_simple_demo_scenario, build_scenario_artifact_from_items_json
 from src.scenario.manager import ScenarioManager
 
 LOG = logging.getLogger("ontology.pipeline")
@@ -169,6 +169,22 @@ class OntologyConceptPipeline:
             )
 
         # Delegate scoring/picking to ScenarioManager helper.
+        # `build_scenario_artifact_from_items_json()` may return a raw Scenario artifact; wrap if needed.
+        if not hasattr(mgr, "select_choice_by_concepts"):
+            try:
+                mgr = ScenarioManager(mgr)  # type: ignore[arg-type]
+            except Exception:
+                # Try common alternative constructor names
+                ctor = getattr(ScenarioManager, "from_scenario", None)
+                if callable(ctor):
+                    mgr = ctor(mgr)  # type: ignore[misc]
+                else:
+                    raise AttributeError(
+                        "Expected ScenarioManager with select_choice_by_concepts(), "
+                        "but got an object without that method. "
+                        "Wrap the scenario with ScenarioManager(scenario)."
+                    )
+
         return mgr.select_choice_by_concepts(round_id, concepts, ctx=ctx)
 
 
@@ -177,9 +193,15 @@ def pipeline_quick_test(anchor_scores: Dict[str, float] | Sequence[float]):
 
     ontology -> concepts -> pick a choice in a specific round
     """
-    pipe = OntologyConceptPipeline()
-
-    mgr = build_simple_demo_scenario()
+    scenario = build_scenario_artifact_from_items_json()
+    try:
+        mgr = ScenarioManager(scenario)
+    except Exception:
+        ctor = getattr(ScenarioManager, "from_scenario", None)
+        if callable(ctor):
+            mgr = ctor(scenario)
+        else:
+            raise
 
     concepts = pipe.infer_concepts_from_anchor_scores(anchor_scores, top_k=8)
 
@@ -203,5 +225,6 @@ if __name__ == "__main__":
         0.20,
         0.05,
     ]
+    pipe = OntologyConceptPipeline()
     picked = pipeline_quick_test(anchor_scores=anchor_scores)
     print(f"{picked}")
